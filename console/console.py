@@ -23,6 +23,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.request
@@ -41,6 +42,7 @@ NETBIRD_NET = ipaddress.ip_network("100.64.0.0/10")
 STACKS = ("hal", "infra", "hello")
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 HOST = socket.gethostname()
+SETTINGS_LOCK = threading.RLock()
 
 
 class Reject(Exception):
@@ -84,16 +86,21 @@ def http_json(url: str, body: dict | None = None, timeout: float = 3) -> tuple[i
 
 
 def settings() -> dict:
-    try:
-        return json.loads((STATE_DIR / "settings.json").read_text())
-    except (OSError, ValueError):
-        return {}
+    with SETTINGS_LOCK:
+        try:
+            return json.loads((STATE_DIR / "settings.json").read_text())
+        except (OSError, ValueError):
+            return {}
 
 
 def save_settings(**kw) -> None:
-    STATE_DIR.mkdir(parents=True, exist_ok=True)
-    s = settings() | kw
-    (STATE_DIR / "settings.json").write_text(json.dumps(s))
+    with SETTINGS_LOCK:
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        s = settings() | kw
+        with tempfile.NamedTemporaryFile(mode="w", dir=STATE_DIR, delete=False) as f:
+            json.dump(s, f)
+            name = f.name
+        os.replace(name, STATE_DIR / "settings.json")
 
 
 # ============================================================================ what this PC looks like
@@ -158,6 +165,8 @@ def swarm() -> dict:
     out = {"docker": {k: d.get(k) for k in ("ok", "version", "desktop", "error", "cpus", "mem")},
            "state": s.get("LocalNodeState", "unknown"), "node_id": s.get("NodeID", ""), "manager": bool(s.get("ControlAvailable")),
            "region": "", "is_main": False, "leader": None, "nodes": [], "membership_error": None}
+    out["cluster_id"] = (s.get("Cluster") or {}).get("ID", "")
+    out["ca_key"] = (s.get("TLSInfo") or {}).get("CertIssuerPublicKey", "")
     if out["manager"]:
         try:
             out["nodes"] = nodes(strict=True)
@@ -170,7 +179,8 @@ def swarm() -> dict:
         for n in out["nodes"]:
             if n["id"] == out["node_id"]:
                 out["region"], out["is_main"] = n["region"], n["main"]
-                identity = {"node_id": n["id"], "region": n["region"], "is_main": n["main"]}
+                identity = {"node_id": n["id"], "region": n["region"], "is_main": n["main"],
+                            "cluster_id": out["cluster_id"], "ca_key": out["ca_key"]}
                 if settings().get("identity") != identity:
                     save_settings(identity=identity)
             if n["leader"]:
@@ -201,7 +211,8 @@ def peer_info() -> dict:
     main = next((n["hostname"] for n in sw["nodes"] if n["main"]), None)
     return {"manager": True, "hostname": HOST, "is_main": sw["is_main"], "addr": netbird()["ip"],
             "regions": regions_from(sw["nodes"]), "reserved": reserved, "main": main, "leader": sw["leader"],
-            "membership_error": sw["membership_error"]}
+            "membership_error": sw["membership_error"], "cluster_id": sw["cluster_id"], "ca_key": sw["ca_key"],
+            "member_ids": [n["id"] for n in sw["nodes"]]}
 
 
 def peer_enroll(body: dict, client: str) -> dict:
@@ -276,7 +287,7 @@ JOB_LOCK = threading.Lock()
 
 
 def log(line: str) -> None:
-    JOB["log"].append(ANSI.sub("", line.rstrip()))
+    JOB["log"].append(re.sub(r"SWMTKN-\S+", "[join token hidden]", ANSI.sub("", line.rstrip())))
     del JOB["log"][:-500]
 
 
@@ -366,6 +377,22 @@ def job_become(region: str) -> None:
         if sw["region"] == region:
             log(f"this PC already is {region}")
             return
+        if not sw["region"] and sw["manager"] and not sw.get("membership_error") and region != MAIN_REGION:
+            main = next((n for n in sw["nodes"] if n["main"] and n["state"] == "ready"), None)
+            if main:
+                url = f"http://{main['addr']}:{PORT}"
+                code, enrollment = http_json(url + "/peer/enroll", {"region": region, "hostname": HOST}, timeout=10)
+                if code != 200:
+                    raise Reject(enrollment.get("error", "The main PC could not reserve this region"))
+                try:
+                    rc, local_token = sh(["docker", "swarm", "join-token", "manager", "-q"], 10)
+                    if rc or local_token.strip() != enrollment.get("token"):
+                        raise Reject("The current swarm does not match the main PC; leave before joining")
+                    log("This PC already joined; completing its missing region label without another join")
+                    stream(["docker", "node", "update", "--label-add", f"region={region}", sw["node_id"]])
+                finally:
+                    http_json(url + "/peer/enrolled", {"region": region}, timeout=5)
+                return
         raise Reject(f"this PC is already in a swarm{' as ' + sw['region'] if sw['region'] else ''}: leave it first")
 
     ensure_mtu()
@@ -407,6 +434,34 @@ def job_become(region: str) -> None:
     http_json(f"http://{m['ip']}:{PORT}/peer/enrolled", {"region": region}, timeout=5)
 
 
+def confirmed_departure(local: dict) -> bool:
+    """An authoritative manager of the same swarm must confirm this node was already removed."""
+    node_id = local.get("NodeID")
+    if not node_id:
+        return False
+    cached = settings().get("identity", {})
+    if cached.get("node_id") != node_id:
+        cached = {}
+    ips = {m.get("Addr", "").rsplit(":", 1)[0] for m in local.get("RemoteManagers") or []}
+    if settings().get("main_ip"):
+        ips.add(settings()["main_ip"])
+    for ip in ips:
+        try:
+            if ipaddress.ip_address(ip) not in NETBIRD_NET:
+                continue
+        except ValueError:
+            continue
+        code, peer = http_json(f"http://{ip}:{PORT}/peer/info", timeout=4)
+        cluster_id = (local.get("Cluster") or {}).get("ID") or cached.get("cluster_id")
+        ca_key = (local.get("TLSInfo") or {}).get("CertIssuerPublicKey") or cached.get("ca_key")
+        same_swarm = bool((cluster_id and peer.get("cluster_id") == cluster_id) or (ca_key and peer.get("ca_key") == ca_key))
+        if code == 200 and peer.get("manager") and peer.get("leader") and not peer.get("membership_error") and same_swarm:
+            ids = peer.get("member_ids")
+            if isinstance(ids, list) and ids and node_id not in ids:
+                return True
+    return False
+
+
 def job_leave() -> None:
     d = docker_info()
     if not d.get("ok"):
@@ -419,6 +474,10 @@ def job_leave() -> None:
         members = nodes()
         me = s.get("NodeID")
         if not members or not any(n["id"] == me for n in members):
+            if confirmed_departure(s):
+                log("A healthy manager of this swarm confirms this node was already removed. Clearing its stale local membership.")
+                stream(["docker", "swarm", "leave", "--force"])
+                return
             raise Reject("Cannot read swarm membership; restore the manager connection and retry Leave")
         if len(members) == 1:
             stream(["docker", "swarm", "leave", "--force"])

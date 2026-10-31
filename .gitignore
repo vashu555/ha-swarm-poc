@@ -4,3 +4,8 @@ config/certs/*.key
 config/certs/*.crt
 __pycache__/
 *.pyc
+
+# generated local integration test artifacts
+qa-alpine.tar
+local-integration-report.json
+token-recovery-report.json
