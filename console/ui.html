@@ -191,7 +191,7 @@ function dataPathCard(highlight) {
   if (!L || !L.ok) return "";
   const rows = L.path.map(p => `<tr ${highlight && p.zone === highlight ? `style="background:color-mix(in srgb,var(--accent) 10%,transparent)"` : ""}>
       <td>${esc(p.what)}</td><td><b>${esc(p.who || "—")}</b></td><td>${zoneBadge(p.zone)}</td></tr>`).join("");
-  const kafka = L.kafka.map(k => `<span class="cell">${zoneBadge(k.zone)}&nbsp;${esc(k.broker)}: <b>${k.partitions}</b> partitions</span>`).join("")
+  const kafka = L.kafka.map(k => `<span class="cell">${zoneBadge(k.zone)}&nbsp;${esc(k.broker)}:&nbsp;<b>${k.partitions}</b>&nbsp;partitions</span>`).join("")
                 || `<span class="muted">no broker answering</span>`;
   const total = Object.values(L.api_rps).reduce((a, b) => a + b, 0);
   const api = S.regions.map(r => `<div style="margin:3px 0"><span style="display:inline-block;width:90px">${REG[r].title}</span>
