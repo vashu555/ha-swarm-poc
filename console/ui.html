@@ -209,9 +209,21 @@ function viewCombined() {
       `<span class="cell" title="${esc(t.state + (t.error ? " · " + t.error : ""))}"><span class="dot ${dotFor(t.state)}"></span>${esc(t.short)}</span>`).join("") || `<span class="muted">·</span>`}</td>`).join("")}</tr>`).join("");
   const pg = C.patroni.length ? C.patroni.map(m => `<span class="cell"><span class="dot ${dotFor(m.state)}"></span><b>${esc(m.name)}</b>&nbsp;${esc(m.role)}</span>`).join("") : `<span class="muted">no database running yet</span>`;
   const acts = Object.entries(C.actions).map(([k, v]) => `<button class="${/rm$/.test(k) ? "sec" : ""}" ${S.job.running ? "disabled" : ""} onclick="if(confirm('${esc(v)}?'))act('/api/action',{name:'${k}'})">${esc(v)}</button>`).join(" ");
+  const allReady = S.regions.every(r => C.nodes.filter(n => n.region === r && n.state === "ready" && n.availability === "active").length === 1);
+  const zoneCards = S.regions.map(r => {
+    const n = C.nodes.find(n => n.region === r), R = REG[r];
+    const tasks = C.tasks.filter(t => t.region === r && t.service.startsWith('hal_'));
+    const running = tasks.filter(t => /^Running\b/i.test(t.state)).length;
+    const status = !n ? 'PC not joined' : n.state !== 'ready' ? 'PC offline' : n.availability === 'drain' ? 'Zone stopping / stopped' : !C.lab_deployed ? 'Lab not deployed' : running < tasks.length ? 'Tasks starting / pending' : 'Tasks running';
+    return `<div class="card" style="border-top:4px solid ${R.c}"><h2>${esc(R.title)}</h2><p><b>${status}</b></p><p class="muted">${n ? esc(n.hostname) + ' · ' + esc(n.addr) : 'Waiting for this PC'}<br>${running}/${tasks.length} trading tasks running</p>
+      <button class="danger" ${S.job.running || !allReady || !C.lab_deployed ? 'disabled' : ''} onclick="if(confirm('Stop the swarm workloads in ${r}?'))act('/api/zone-drill',{region:'${r}',action:'down'})">Zone down</button>
+      <button ${S.job.running || !n || n.state !== 'ready' || n.availability !== 'drain' ? 'disabled' : ''} onclick="act('/api/zone-drill',{region:'${r}',action:'up'})">Zone up</button></div>`;
+  }).join('');
   return `<div class="card"><div class="hero"><span class="big" style="--c:var(--accent)">All zones</span>
       <span class="badge">Leader: ${C.leader ? esc(C.leader.hostname) + " (" + esc(C.leader.region) + ")" : "?"}</span>
       <span class="badge">${C.nodes.length} PCs</span></div></div>
+    <div class="card"><h2>Live zone outages and recovery</h2><p class="muted">Zone down stops that PC's swarm workloads; Zone up starts them again. Managers and this console stay connected. Observe one zone at a time. Counts show Docker task state, not database or application health.</p></div>
+    <div class="grid g3">${zoneCards}</div>
     <div class="card"><h2>PCs (swarm nodes)</h2><p class="muted">Departed PCs are removed and their regions freed automatically after Docker detects them as down. Cleanup requires a manager majority. Closing the browser does not leave the swarm.</p><table><tr><th>Region</th><th>Host</th><th>NetBird IP</th><th>State</th><th>Availability</th><th>Manager</th><th></th></tr>${nodes}</table></div>
     <div class="card"><h2>Every service, by region</h2><p class="muted" style="margin-top:0">PostgreSQL: ${pg}</p>
       ${matrix ? `<table class="matrix"><tr><th>Kind</th>${S.regions.map(r => `<th style="color:${REG[r].c}">${REG[r].title}</th>`).join("")}</tr>${matrix}</table>` : `<p class="muted">Nothing deployed yet: build the images, then deploy the demo or the lab.</p>`}</div>

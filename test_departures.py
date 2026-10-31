@@ -14,6 +14,24 @@ def node(id='self', state='ready', manager=True, leader=False):
     return dict(id=id, state=state, manager=manager, leader=leader, reachability='reachable', hostname=id, region='delhi')
 
 class Departures(unittest.TestCase):
+    def test_zone_drill_requires_three_ready_regions(self):
+        with patch.object(c, 'swarm', return_value={'is_main': True, 'nodes': [dict(node(), region='mumbai', availability='active')]}), patch.object(c, 'stream') as stream:
+            with self.assertRaises(c.Reject):
+                c.job_zone('mumbai', 'down')
+        stream.assert_not_called()
+
+    def test_zone_down_drains_selected_pc_only(self):
+        members = [dict(node(r), region=r, availability='active') for r in c.REGIONS]
+        with patch.object(c, 'swarm', return_value={'is_main': True, 'nodes': members}), patch.object(c, 'sh', return_value=(0, 'service-id')), patch.object(c, 'stream') as stream:
+            c.job_zone('delhi', 'down')
+        stream.assert_called_once_with(['docker', 'node', 'update', '--availability', 'drain', 'delhi'])
+
+    def test_zone_up_can_restore_after_drill(self):
+        members = [dict(node('delhi'), region='delhi', availability='drain')]
+        with patch.object(c, 'swarm', return_value={'is_main': True, 'nodes': members}), patch.object(c, 'stream') as stream:
+            c.job_zone('delhi', 'up')
+        stream.assert_called_once_with(['docker', 'node', 'update', '--availability', 'active', 'delhi'])
+
     def test_pending_join_is_not_started_again(self):
         for state in ('pending', 'error', 'locked'):
             with self.subTest(state=state), patch.object(c, 'netbird', return_value={'ip': '100.93.151.120'}), patch.object(c, 'swarm', return_value={'docker': {'ok': True, 'desktop': False}, 'state': state}), patch.object(c, 'ensure_mtu') as mtu, patch.object(c, 'discover') as discover:

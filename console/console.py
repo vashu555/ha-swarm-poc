@@ -478,6 +478,31 @@ def job_script(*args: str) -> None:
     stream(["bash", *args])
 
 
+def job_zone(region: str, action: str) -> None:
+    if region not in REGIONS or action not in ("down", "up"):
+        raise Reject("Choose a region and down or up")
+    sw = swarm()
+    if sw.get("membership_error"):
+        raise Reject("Restore the manager connection before running a zone drill")
+    if not sw["is_main"]:
+        raise Reject("Use the main PC for zone drills")
+    members = sw["nodes"]
+    target = [n for n in members if n["region"] == region]
+    if len(target) != 1 or target[0]["state"] != "ready":
+        raise Reject("The selected PC must be joined and ready")
+    if action == "down":
+        for r in REGIONS:
+            matching = [n for n in members if n["region"] == r]
+            if len(matching) != 1 or matching[0]["state"] != "ready" or matching[0]["availability"] != "active":
+                raise Reject("Start with all three zones ready and active. Bring the previous zone up before stopping another")
+        rc, out = sh(["docker", "service", "ls", "-q", "--filter", "label=com.docker.stack.namespace=hal"])
+        if rc or not out.strip():
+            raise Reject("Deploy the trading lab before running a zone drill")
+    log(f"{region}: {'stopping its swarm workloads' if action == 'down' else 'starting its swarm workloads'}. The manager and host console remain connected.")
+    stream(["docker", "node", "update", "--availability", "drain" if action == "down" else "active", target[0]["id"]])
+    log("Request accepted; watch live task states as workloads stop or start")
+
+
 def job_release(region: str) -> None:
     for n in nodes():
         if n["region"] == region:
@@ -584,12 +609,21 @@ def view_combined() -> dict:
         for t in json_lines(out) if rc == 0 else []:
             tasks.append({"service": re.sub(r"\.\d+$", "", t["Name"]), "node": t["Node"], "state": t["CurrentState"],
                           "error": t.get("Error", "")})
+    service_regions = {}
+    rc, out = sh("ids=$(docker service ls -q --filter label=com.docker.stack.namespace=hal) && if [ -n \"$ids\" ]; then docker service inspect $ids --format '{{json .}}'; fi", 10)
+    for svc in json_lines(out) if rc == 0 else []:
+        spec = svc.get("Spec") or {}
+        constraints = ((spec.get("TaskTemplate") or {}).get("Placement") or {}).get("Constraints") or []
+        for constraint in constraints:
+            m = re.fullmatch(r"node\.labels\.region\s*==\s*(mumbai|hyderabad|delhi)", constraint)
+            if m:
+                service_regions[spec["Name"]] = m.group(1)
     region_of = {n["hostname"]: n["region"] for n in sw["nodes"]}
     for t in tasks:
-        t["region"] = region_of.get(t["node"], "")
+        t["region"] = service_regions.get(t["service"], region_of.get(t["node"], ""))
     return {"nodes": sw["nodes"], "leader": sw["leader"], "regions": regions_from(sw["nodes"]), "tasks": tasks,
             "patroni": patroni(), "is_main": sw["is_main"],
-            "actions": {k: v[0] for k, v in ACTIONS.items()}}
+            "actions": {k: v[0] for k, v in ACTIONS.items()}, "lab_deployed": bool(service_regions)}
 
 
 def view_state() -> dict:
@@ -684,6 +718,10 @@ class Handler(BaseHTTPRequestHandler):
                     run_job(f"Become {b['region']}", job_become, b["region"])
                 elif path == "/api/leave":
                     run_job("Leave the swarm", job_leave)
+                elif path == "/api/zone-drill":
+                    if not swarm()["is_main"]:
+                        raise Reject("Only the main PC can run zone drills")
+                    run_job(f"Zone {b.get('region')} {b.get('action')}", job_zone, str(b.get("region", "")), str(b.get("action", "")))
                 elif path == "/api/action":
                     if not swarm()["is_main"]:
                         raise Reject("only the main PC can do this")
