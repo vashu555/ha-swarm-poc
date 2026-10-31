@@ -14,6 +14,14 @@ def node(id='self', state='ready', manager=True, leader=False):
     return dict(id=id, state=state, manager=manager, leader=leader, reachability='reachable', hostname=id, region='delhi')
 
 class Departures(unittest.TestCase):
+    def test_pending_join_is_not_started_again(self):
+        for state in ('pending', 'error', 'locked'):
+            with self.subTest(state=state), patch.object(c, 'netbird', return_value={'ip': '100.93.151.120'}), patch.object(c, 'swarm', return_value={'docker': {'ok': True, 'desktop': False}, 'state': state}), patch.object(c, 'ensure_mtu') as mtu, patch.object(c, 'discover') as discover:
+                with self.assertRaises(c.Reject):
+                    c.job_become('delhi')
+                mtu.assert_not_called()
+                discover.assert_not_called()
+
     def test_lost_quorum_retains_verified_local_identity(self):
         identity = {'node_id': 'self', 'region': 'mumbai', 'is_main': True}
         with patch.object(c, 'docker_info', return_value=info()), patch.object(c, 'nodes', side_effect=RuntimeError('no leader')), patch.object(c, 'settings', return_value={'identity': identity}):

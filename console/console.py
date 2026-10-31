@@ -358,6 +358,10 @@ def job_become(region: str) -> None:
         raise Reject("Docker is not running in Ubuntu")
     if sw["docker"]["desktop"]:
         raise Reject("this is Docker Desktop; the swarm needs Docker Engine inside Ubuntu")
+    if sw["state"] in ("pending", "error", "locked"):
+        raise Reject(f"Docker swarm state is {sw['state']}: an earlier join or membership still exists. "
+                     "Use Leave the swarm to clear the earlier attempt, wait for it to finish, then select the region again. "
+                     "A locked swarm must be unlocked first")
     if sw["state"] == "active":
         if sw["region"] == region:
             log(f"this PC already is {region}")

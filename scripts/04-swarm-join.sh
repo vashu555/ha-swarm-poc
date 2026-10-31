@@ -7,6 +7,12 @@ source "$(dirname "$0")/../env.sh"
 REGION="${1:-}"; TOKEN="${2:-}"; MGR="${3:-}"
 [ -n "$REGION" ] && [ -n "$TOKEN" ] && [ -n "$MGR" ] || die "usage: $0 <region> <TOKEN> <FIRST_PC_NETBIRD_IP>"
 region_ok "$REGION"
+state=$(docker info --format '{{.Swarm.LocalNodeState}}')
+case "$state" in
+  pending|error|locked) die "Docker swarm is $state from an earlier attempt. Use Leave the swarm in the console, wait for completion, then retry. Unlock a locked swarm first." ;;
+  active|inactive) ;;
+  *) die "Cannot determine Docker swarm membership ($state); check Docker before retrying" ;;
+esac
 IP=$(netbird_ip); [ -n "$IP" ] || die "NetBird is not connected (run scripts/02-join-netbird.sh first)"
 
 say "1/3  Can this PC reach the first PC ($MGR) through NetBird?"

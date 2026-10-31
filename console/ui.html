@@ -127,6 +127,9 @@ function viewNetbird() {
 
 // ------------------------------------------------------------------ step 2: choose a role
 function viewChoose() {
+  if (["pending", "error", "locked"].includes(S.swarm.state)) {
+    return `<div class="card"><h2>Previous swarm attempt needs attention</h2><p>Docker reports <b>${esc(S.swarm.state)}</b>. This PC cannot start another join yet. ${S.swarm.state === "locked" ? "Unlock Docker's swarm first." : "Click Leave the swarm below, wait for completion, then choose the region again."}</p></div>${leaveCard()}${peersCard()}${jobBox()}`;
+  }
   const cl = S.cluster, regs = cl.regions || {}, reserved = cl.reserved || {}, found = !!cl.source;
   const cards = S.regions.map(r => {
     const t = regs[r], R = REG[r], isMain = r === S.main_region;
