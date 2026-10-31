@@ -1,0 +1,6 @@
+# the lab certificate's private key is created on each swarm by scripts/30-deploy-lab.sh
+config/certs/*.pem
+config/certs/*.key
+config/certs/*.crt
+__pycache__/
+*.pyc

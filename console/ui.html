@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HA Swarm Node Console</title>
+<style>
+:root{--bg:#f6f7f9;--card:#fff;--ink:#0f172a;--muted:#64748b;--line:#e2e8f0;--ok:#16a34a;--warn:#d97706;--bad:#dc2626;
+  --mumbai:#0d9488;--hyderabad:#7c3aed;--delhi:#c2410c;--accent:#2563eb}
+@media (prefers-color-scheme: dark){:root{--bg:#0b1020;--card:#121a2e;--ink:#e2e8f0;--muted:#94a3b8;--line:#22304d}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 "Segoe UI",system-ui,sans-serif}
+header{display:flex;align-items:center;gap:12px;padding:12px 20px;border-bottom:1px solid var(--line);background:var(--card);position:sticky;top:0;z-index:2}
+header h1{font-size:16px;margin:0}
+header .sp{flex:1}
+.badge{display:inline-flex;align-items:center;gap:6px;padding:2px 10px;border-radius:99px;font-size:12px;font-weight:600;border:1px solid var(--line);white-space:nowrap}
+.badge.r{color:#fff;border:none}
+main{max-width:1180px;margin:0 auto;padding:20px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin-bottom:16px}
+.card h2{font-size:15px;margin:0 0 10px}
+.muted{color:var(--muted)}
+.grid{display:grid;gap:16px}
+.g3{grid-template-columns:repeat(3,1fr)}.g2{grid-template-columns:1fr 1fr}
+@media (max-width:800px){.g3,.g2{grid-template-columns:1fr}}
+.role{border:2px solid var(--line);border-radius:14px;padding:16px;background:var(--card);display:flex;flex-direction:column;gap:8px}
+.role h3{margin:0;font-size:18px;color:var(--c)}
+.role .what{font-size:13px;color:var(--muted);flex:1}
+.role.free{border-color:var(--c)}
+.role.taken{opacity:.75}
+button{font:inherit;font-weight:600;border:none;border-radius:8px;padding:8px 14px;cursor:pointer;background:var(--accent);color:#fff}
+button.sec{background:transparent;color:var(--ink);border:1px solid var(--line)}
+button.danger{background:var(--bad)}
+button:disabled{opacity:.45;cursor:not-allowed}
+input{font:inherit;padding:8px 10px;border-radius:8px;border:1px solid var(--line);background:transparent;color:var(--ink);width:100%}
+label{font-size:12px;font-weight:600;color:var(--muted)}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{text-align:left;font-size:12px;color:var(--muted);font-weight:600;padding:6px 8px;border-bottom:1px solid var(--line)}
+td{padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px;background:var(--muted)}
+.dot.ok{background:var(--ok)}.dot.warn{background:var(--warn)}.dot.bad{background:var(--bad)}
+pre.log{background:#0b1220;color:#d1d5db;border-radius:10px;padding:10px 12px;max-height:280px;overflow:auto;font:12px/1.45 Consolas,monospace;white-space:pre-wrap;margin:8px 0 0}
+.msg{border-radius:10px;padding:10px 12px;margin:10px 0}
+.msg.bad{background:color-mix(in srgb,var(--bad) 12%,transparent);color:var(--bad)}
+.msg.ok{background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok)}
+.hero{display:flex;align-items:center;gap:14px;flex-wrap:wrap}
+.hero .big{font-size:26px;font-weight:800;color:var(--c)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;font-size:13px}
+.kv b{font-weight:600;color:var(--muted)}
+.matrix td{white-space:nowrap}
+.cell{display:inline-flex;align-items:center;margin:2px 8px 2px 0}
+.tabs{display:flex;gap:8px}
+.tabs a{padding:6px 12px;border-radius:8px;text-decoration:none;color:var(--ink);border:1px solid var(--line);font-weight:600}
+.tabs a.on{background:var(--accent);color:#fff;border-color:var(--accent)}
+a{color:var(--accent)}
+.row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}
+.row > div{flex:1;min-width:200px}
+</style>
+</head>
+<body>
+<header>
+  <h1>HA Swarm Node Console</h1>
+  <span class="badge" id="host">…</span>
+  <span id="rolebadge"></span>
+  <span class="sp"></span>
+  <nav class="tabs" id="tabs"></nav>
+</header>
+<main id="app"><div class="card">Loading…</div></main>
+
+<script>
+const REG = {
+  mumbai:    {c: "var(--mumbai)",    title: "Mumbai",    what: "MAIN PC. Creates the swarm, builds the images, runs the image registry, the simulated exchange and the lab dashboard. Was azure-z1."},
+  hyderabad: {c: "var(--hyderabad)", title: "Hyderabad", what: "Second region. Second copy of every database and broker, HAProxy-2, APIs 3–4. Was azure-z2."},
+  delhi:     {c: "var(--delhi)",     title: "Delhi",     what: "Third region: the tie-breaking vote. Third copy of every database and broker. Was oracle."},
+};
+const KINDS = ["etcd","pg","pgbouncer","kafka","rabbit","redis","sentinel","haproxy","api","relay","router","feed","bridge","worker","exchange","control","registry","web"];
+let S = null, Z = null, C = null, lastErr = "";
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const view = () => (location.hash.replace("#/", "") || "auto");
+const dotFor = st => /^running|^ready|^Running|healthy|leader|streaming/i.test(st) ? "ok" : /pending|preparing|starting|assigned|accepted|created|restarting/i.test(st) ? "warn" : "bad";
+
+async function api(path, body) {
+  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+  return j;
+}
+async function act(path, body) {
+  lastErr = "";
+  try { await api(path, body); } catch (e) { lastErr = e.message; }
+  await tick();
+}
+
+function jobBox() {
+  const j = S.job;
+  if (!j.name) return "";
+  const head = j.running ? `<span class="dot warn"></span>${esc(j.name)} … running`
+             : j.ok ? `<span class="dot ok"></span>${esc(j.name)}: done` : `<span class="dot bad"></span>${esc(j.name)}: ${j.reject ? "refused" : "failed"}`;
+  return `<div class="card"><h2>${head}</h2>${j.reject ? `<div class="msg bad">${esc(j.reject)}</div>` : ""}
+          <pre class="log" id="joblog">${esc(j.log.join("\n"))}</pre></div>`;
+}
+function errBox() { return lastErr ? `<div class="msg bad">${esc(lastErr)}</div>` : ""; }
+
+// ------------------------------------------------------------------ step 1: NetBird
+function viewNetbird() {
+  if (!S.netbird.installed) return `<div class="card"><h2>NetBird is not installed in Ubuntu</h2>
+    <p>Run the PowerShell command from the README again; it installs NetBird.</p></div>`;
+  return `<div class="card"><h2>Step 1 · Connect this PC to the private network (NetBird)</h2>
+    <p class="muted">Get a setup key from whoever runs the main PC (NetBird dashboard → Setup Keys). It is used once.</p>
+    <div class="row"><div><label>Setup key</label><input id="key" placeholder="e.g. A1B2C3D4-…" autocomplete="off"></div>
+    <div><label>Management URL (only if you host NetBird yourself)</label><input id="mgmt" placeholder="leave empty for app.netbird.io"></div>
+    <button onclick="act('/api/netbird',{setup_key:$('#key').value,management_url:$('#mgmt').value})" ${S.job.running ? "disabled" : ""}>Connect</button></div>
+    ${errBox()}</div>${jobBox()}`;
+}
+
+// ------------------------------------------------------------------ step 2: choose a role
+function viewChoose() {
+  const cl = S.cluster, regs = cl.regions || {}, reserved = cl.reserved || {}, found = !!cl.source;
+  const cards = S.regions.map(r => {
+    const t = regs[r], R = REG[r], isMain = r === S.main_region;
+    let status, can;
+    if (t) { status = `<span class="dot ${t.state === "ready" ? "ok" : "bad"}"></span>Taken by <b>${esc(t.hostname)}</b> (${esc(t.state)})`; can = false; }
+    else if (reserved[r]) { status = `<span class="dot warn"></span>${esc(reserved[r])} is joining as ${r} now`; can = false; }
+    else if (isMain) { status = found ? `<span class="dot bad"></span>A swarm already exists` : `<span class="dot ok"></span>Free: this PC will <b>create</b> the swarm`; can = !found; }
+    else { status = found ? `<span class="dot ok"></span>Free` : `<span class="dot warn"></span>Waiting for the main PC (Mumbai)`; can = found; }
+    return `<div class="role ${can ? "free" : "taken"}" style="--c:${R.c}">
+      <h3>${R.title}${isMain ? " · main" : ""}</h3><div class="what">${R.what}</div><div>${status}</div>
+      <button style="background:${R.c}" ${can && !S.job.running ? "" : "disabled"} onclick="if(confirm('Make this PC ${R.title}?'))act('/api/become',{region:'${r}'})">Become ${R.title}</button></div>`;
+  }).join("");
+  return `<div class="card"><h2>Step 2 · Who should this PC become?</h2>
+    <p class="muted">This PC is <b>${esc(S.netbird.ip)}</b> on NetBird. ${found ? `Swarm found through <b>${esc(cl.source)}</b>${cl.main ? `, main PC <b>${esc(cl.main)}</b>` : ""}.` : "No swarm found on the network yet."}
+    A region that is already taken is refused.</p>
+    <div class="grid g3">${cards}</div>${errBox()}
+    <details style="margin-top:12px"><summary class="muted">Main PC not found automatically?</summary>
+      <div class="row" style="margin-top:8px"><div><label>Main PC's NetBird IP</label><input id="mainip" value="${esc(S.settings.main_ip || "")}" placeholder="100.x.y.z"></div>
+      <button class="sec" onclick="act('/api/settings',{main_ip:$('#mainip').value})">Save</button></div></details></div>
+    ${peersCard()}${jobBox()}`;
+}
+
+function peersCard() {
+  const p = S.netbird.peers || [];
+  return `<div class="card"><h2>NetBird peers (other PCs)</h2>${p.length ? `<table><tr><th>Name</th><th>NetBird IP</th><th>Status</th><th>Path</th><th>Latency</th></tr>
+    ${p.map(x => `<tr><td>${esc(x.name)}</td><td>${esc(x.ip)}</td><td><span class="dot ${/connected/i.test(x.status) ? "ok" : "bad"}"></span>${esc(x.status)}</td><td>${esc(x.type)}</td><td>${esc(x.latency)}</td></tr>`).join("")}</table>`
+    : `<p class="muted">No other PCs on the network yet.</p>`}</div>`;
+}
+
+// ------------------------------------------------------------------ my zone
+function viewZone() {
+  if (!Z) return `<div class="card">Loading this zone…</div>`;
+  const R = REG[Z.region] || {c: "var(--muted)", title: Z.region || "?"};
+  const me = Z.node || {}, L = Z.leader;
+  const memUsed = Z.mem.total && Z.mem.available ? `${((Z.mem.total - Z.mem.available) / 1024).toFixed(1)} of ${(Z.mem.total / 1024).toFixed(1)} GB` : "?";
+  const rows = Z.services.map(s => `<tr><td><span class="dot ${dotFor(s.state)}"></span>${esc(s.service.replace(/^hal_/, ""))}</td>
+     <td class="muted">${esc(s.stack)}</td><td>${esc(s.status)}</td><td>${esc(s.cpu)}</td><td>${esc(s.mem)}</td></tr>`).join("");
+  const pg = Z.patroni.length ? `<table><tr><th>Database</th><th>Role</th><th>State</th><th>Lag</th></tr>${Z.patroni.map(m =>
+     `<tr><td>${esc(m.name)}</td><td><b>${esc(m.role)}</b></td><td><span class="dot ${dotFor(m.state)}"></span>${esc(m.state)}</td><td>${esc(m.lag)}</td></tr>`).join("")}</table>` : `<p class="muted">No database running on this PC yet.</p>`;
+  return `<div class="card" style="--c:${R.c}"><div class="hero"><span class="big">You are ${esc(R.title)}</span>
+      ${Z.is_main ? `<span class="badge r" style="background:var(--mumbai)">MAIN PC</span>` : ""}
+      <span class="badge">${me.leader ? "★ Swarm LEADER" : "Swarm manager · " + esc(me.reachability || "")}</span>
+      <span class="sp" style="flex:1"></span>
+      ${Z.is_main ? `<button onclick="window.open('/#/combined','combined')">Open combined view ↗</button>` : ""}</div>
+    <p class="muted" style="margin:8px 0 0">Leader right now: <b>${L ? esc(L.hostname) + " (" + esc(L.region) + ")" : "?"}</b>. The 3 managers elect it by vote and move it
+      automatically if that PC goes down. The <b>main</b> role (Mumbai) is our own choice: it holds the registry, exchange and dashboard.</p></div>
+  <div class="grid g2">
+    <div class="card"><h2>This PC</h2><div class="kv">
+      <b>Hostname</b><span>${esc(S.hostname)}</span><b>NetBird IP</b><span>${esc(Z.netbird.ip)} (MTU ${esc(Z.netbird.mtu)})</span>
+      <b>Swarm node</b><span>${esc(me.state)} · ${esc(me.availability)}</span><b>Docker</b><span>${esc(Z.docker.version)} · ${esc(Z.docker.cpus)} CPUs</span>
+      <b>Memory used</b><span>${memUsed}</span><b>Load</b><span>${Z.load.map(x => x.toFixed(2)).join(" · ")}</span></div></div>
+    <div class="card"><h2>Pages on this PC</h2>${Z.links.length ? Z.links.map(l => `<div><a href="${esc(l[1])}" target="_blank">${esc(l[0])}</a> <span class="muted">${esc(l[1])}</span></div>`).join("") : `<p class="muted">Nothing published here yet.</p>`}
+      <h2 style="margin-top:14px">Database cluster (seen from here)</h2>${pg}</div>
+  </div>
+  <div class="card"><h2>Services in this zone <span class="muted">(${Z.services.length}, CPU/memory ${Z.stats_age < 30 ? "live" : "loading"})</span></h2>
+    ${rows ? `<table><tr><th>Service</th><th>Stack</th><th>Status</th><th>CPU</th><th>Memory</th></tr>${rows}</table>` : `<p class="muted">Nothing runs here yet. ${Z.is_main ? "Use the combined view to build images and deploy." : "The main PC deploys the lab."}</p>`}</div>
+  ${peersCard()}
+  <div class="card"><h2>Leave</h2><p class="muted">Takes this PC out of the swarm; its region becomes free. Its data volumes stay on this PC.</p>
+    <button class="danger" ${S.job.running ? "disabled" : ""} onclick="if(confirm('Take this PC out of the swarm?'))act('/api/leave',{})">Leave the swarm</button>${errBox()}</div>
+  ${jobBox()}`;
+}
+
+// ------------------------------------------------------------------ combined (main PC)
+function viewCombined() {
+  if (!C) return `<div class="card">Loading the whole swarm…</div>`;
+  const nodes = C.nodes.map(n => `<tr><td><span class="badge r" style="background:${(REG[n.region] || {}).c || "var(--muted)"}">${esc(n.region || "no region")}</span></td>
+    <td>${esc(n.hostname)}${n.main ? " · <b>main</b>" : ""}</td><td>${esc(n.addr)}</td><td><span class="dot ${dotFor(n.state)}"></span>${esc(n.state)}</td>
+    <td>${esc(n.availability)}</td><td>${n.leader ? "<b>★ Leader</b>" : esc(n.reachability)}</td>
+    <td>${n.state !== "ready" && n.region ? `<button class="sec" onclick="if(confirm('Release ${n.region}? The PC must be gone for good.'))act('/api/release',{region:'${n.region}'})">Release</button>` : ""}</td></tr>`).join("");
+  const byKind = {};
+  for (const t of C.tasks) {
+    const short = t.service.replace(/^(hal|infra|hello)_/, ""), kind = short.replace(/-\d+$/, "");
+    ((byKind[kind] ||= {})[t.region] ||= []).push({...t, short});
+  }
+  const kinds = [...KINDS.filter(k => byKind[k]), ...Object.keys(byKind).filter(k => !KINDS.includes(k))];
+  const matrix = kinds.map(k => `<tr><td><b>${esc(k)}</b></td>${S.regions.map(r => `<td>${(byKind[k][r] || []).map(t =>
+      `<span class="cell" title="${esc(t.state + (t.error ? " · " + t.error : ""))}"><span class="dot ${dotFor(t.state)}"></span>${esc(t.short)}</span>`).join("") || `<span class="muted">·</span>`}</td>`).join("")}</tr>`).join("");
+  const pg = C.patroni.length ? C.patroni.map(m => `<span class="cell"><span class="dot ${dotFor(m.state)}"></span><b>${esc(m.name)}</b>&nbsp;${esc(m.role)}</span>`).join("") : `<span class="muted">no database running yet</span>`;
+  const acts = Object.entries(C.actions).map(([k, v]) => `<button class="${/rm$/.test(k) ? "sec" : ""}" ${S.job.running ? "disabled" : ""} onclick="if(confirm('${esc(v)}?'))act('/api/action',{name:'${k}'})">${esc(v)}</button>`).join(" ");
+  return `<div class="card"><div class="hero"><span class="big" style="--c:var(--accent)">All zones</span>
+      <span class="badge">Leader: ${C.leader ? esc(C.leader.hostname) + " (" + esc(C.leader.region) + ")" : "?"}</span>
+      <span class="badge">${C.nodes.length} PCs</span></div></div>
+    <div class="card"><h2>PCs (swarm nodes)</h2><table><tr><th>Region</th><th>Host</th><th>NetBird IP</th><th>State</th><th>Availability</th><th>Manager</th><th></th></tr>${nodes}</table></div>
+    <div class="card"><h2>Every service, by region</h2><p class="muted" style="margin-top:0">PostgreSQL: ${pg}</p>
+      ${matrix ? `<table class="matrix"><tr><th>Kind</th>${S.regions.map(r => `<th style="color:${REG[r].c}">${REG[r].title}</th>`).join("")}</tr>${matrix}</table>` : `<p class="muted">Nothing deployed yet: build the images, then deploy the demo or the lab.</p>`}</div>
+    <div class="card"><h2>Deploy (main PC)</h2><p class="muted" style="margin-top:0">In order: build images once → demo (optional) → lab. Before deploying the lab, stop the single-PC lab on this PC
+      (<code>docker compose down</code> in /mnt/d/HA_Trading_Lab).</p>${acts}${errBox()}
+      <p style="margin-bottom:0"><a href="http://127.0.0.1:9700" target="_blank">Lab dashboard</a> · <a href="https://127.0.0.1:8443/live" target="_blank">Trader page</a> · <a href="http://127.0.0.1:8404/stats" target="_blank">HAProxy stats</a></p></div>
+    ${jobBox()}`;
+}
+
+// ------------------------------------------------------------------ loop
+async function tick() {
+  try { S = await api("/api/state"); } catch (e) { $("#app").innerHTML = `<div class="card"><div class="msg bad">Console not answering: ${esc(e.message)}</div></div>`; return; }
+  const sw = S.swarm, joined = sw.state === "active" && sw.region;
+  $("#host").textContent = S.hostname + (S.netbird.ip ? " · " + S.netbird.ip : "");
+  $("#rolebadge").innerHTML = joined ? `<span class="badge r" style="background:${REG[sw.region].c}">${REG[sw.region].title}${sw.is_main ? " · main" : ""}</span>` : "";
+  let v = view();
+  if (!joined) v = "setup"; else if (v === "auto" || v === "setup") v = "zone";
+  if (v === "combined" && !sw.is_main) v = "zone";
+  $("#tabs").innerHTML = joined ? `<a href="#/zone" class="${v === "zone" ? "on" : ""}">My zone</a>${sw.is_main ? `<a href="#/combined" class="${v === "combined" ? "on" : ""}">All zones</a>` : ""}` : "";
+  try {
+    if (v === "zone") Z = await api("/api/zone");
+    if (v === "combined") C = await api("/api/combined");
+  } catch (e) { lastErr = e.message; }
+  const html = v === "setup" ? (!S.netbird.connected ? viewNetbird() : viewChoose()) : v === "zone" ? viewZone() : viewCombined();
+  const focus = document.activeElement && document.activeElement.id, val = focus && document.activeElement.value;
+  const log = $("#joblog"), atEnd = !log || log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+  if (!(focus && ["key", "mgmt", "mainip"].includes(focus))) $("#app").innerHTML = html;   // don't wipe what is being typed
+  const nl = $("#joblog"); if (nl && atEnd) nl.scrollTop = nl.scrollHeight;
+  document.title = (joined ? REG[sw.region].title + (v === "combined" ? " · all zones" : " · my zone") : "Choose a role") + " · HA Swarm";
+}
+window.addEventListener("hashchange", tick);
+tick(); setInterval(tick, 2500);
+</script>
+</body>
+</html>

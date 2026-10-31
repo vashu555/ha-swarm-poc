@@ -1,0 +1,16 @@
+# Demo (stack "hello"): one small web service, 3 copies, to watch Swarm place, route and move containers.
+# Each answer names the container that served it, so you can see which region answered.
+version: "3.8"
+services:
+  web:
+    image: traefik/whoami:v1.10.1
+    ports:
+      - {target: 80, published: 8088, mode: ingress}   # routing mesh: EVERY PC answers on 8088, whichever runs a copy
+    deploy:
+      replicas: 3
+      placement:
+        preferences: [{spread: node.labels.region}]     # one copy per region while all 3 are up …
+        max_replicas_per_node: 2                         # … and when a region is lost its copy moves to another PC
+      update_config: {parallelism: 1, delay: 5s, order: start-first, failure_action: rollback}
+      restart_policy: {condition: any, delay: 2s}
+      resources: {limits: {memory: 32M}}

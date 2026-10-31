@@ -1,0 +1,16 @@
+# The swarm's own image registry (stack "infra"). It runs on the first PC; thanks to the routing mesh every PC can
+# push and pull on 127.0.0.1:5000, and Docker allows plain HTTP to 127.0.0.1 without extra settings.
+# POC only: no password, and every NetBird peer can reach port 5000.
+version: "3.8"
+services:
+  registry:
+    image: registry:2.8.3
+    ports:
+      - {target: 5000, published: 5000, mode: ingress}
+    volumes: [registry-data:/var/lib/registry]
+    deploy:
+      replicas: 1
+      placement: {constraints: ["node.labels.region == ${FIRST_REGION:-mumbai}"]}   # its images live on this PC's disk
+      restart_policy: {condition: any, delay: 3s}
+volumes:
+  registry-data: {}
