@@ -21,10 +21,16 @@ function Step($text) { Write-Host "`n== $text" -ForegroundColor Cyan }
 function Info($text) { Write-Host "   $text" }
 
 # Runs a bash script inside Ubuntu as root (no sudo password needed). Throws if it fails.
+# The script goes through a temporary file with Unix line endings: text piped from PowerShell gets "\r\n" added,
+# and that invisible "\r" breaks the last command.
 function Invoke-Ubuntu([string]$Bash) {
-    $Bash = $Bash -replace "`r", ""
-    $Bash | wsl.exe -d $script:Distro -u root -- bash -s
-    if ($LASTEXITCODE -ne 0) { throw "a step inside Ubuntu failed (exit code $LASTEXITCODE)" }
+    $file = Join-Path $env:TEMP ("ha-node-step-{0}.sh" -f [guid]::NewGuid().ToString('N'))
+    [IO.File]::WriteAllText($file, (($Bash -replace "`r", "") + "`n"), (New-Object Text.UTF8Encoding $false))
+    try {
+        $linux = (wsl.exe -d $script:Distro -e wslpath -a $file | Out-String).Trim()
+        wsl.exe -d $script:Distro -u root -e bash $linux
+        if ($LASTEXITCODE -ne 0) { throw "a step inside Ubuntu failed (exit code $LASTEXITCODE)" }
+    } finally { Remove-Item $file -ErrorAction SilentlyContinue }
 }
 
 # ------------------------------------------------------------------ 1. WSL and Ubuntu
@@ -71,7 +77,7 @@ if docker info 2>/dev/null | grep -qi 'Operating System: Docker Desktop'; then
 fi
 need=""
 for c in git python3 openssl curl ip; do command -v $c >/dev/null || need="$need $c"; done
-# (every command gets </dev/null: this script itself arrives on stdin, and a command reading stdin would eat it)
+# (</dev/null: no command here may wait for keyboard input)
 if [ -n "$need" ]; then apt-get update -qq </dev/null && apt-get install -y -qq git python3 openssl curl iproute2 </dev/null >/dev/null; fi
 if ! command -v docker >/dev/null; then echo "   installing Docker Engine ..."; curl -fsSL https://get.docker.com </dev/null | sh >/dev/null; fi
 systemctl enable --now docker </dev/null >/dev/null 2>&1
