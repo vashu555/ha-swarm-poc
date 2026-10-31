@@ -136,9 +136,11 @@ def docker_info() -> dict:
             "cpus": j.get("NCPU"), "mem": j.get("MemTotal"), "swarm": j.get("Swarm") or {}}
 
 
-def nodes() -> list[dict]:
+def nodes(strict: bool = False) -> list[dict]:
     """Every node of the swarm (managers only can ask)."""
     rc, out = sh("docker node inspect $(docker node ls -q) --format '{{json .}}'", 10)
+    if rc and strict:
+        raise RuntimeError(out[-600:])
     res = []
     for n in json_lines(out) if rc == 0 else []:
         ms = n.get("ManagerStatus") or {}
@@ -155,12 +157,22 @@ def swarm() -> dict:
     s = d.get("swarm") or {}
     out = {"docker": {k: d.get(k) for k in ("ok", "version", "desktop", "error", "cpus", "mem")},
            "state": s.get("LocalNodeState", "unknown"), "node_id": s.get("NodeID", ""), "manager": bool(s.get("ControlAvailable")),
-           "region": "", "is_main": False, "leader": None, "nodes": []}
+           "region": "", "is_main": False, "leader": None, "nodes": [], "membership_error": None}
     if out["manager"]:
-        out["nodes"] = nodes()
+        try:
+            out["nodes"] = nodes(strict=True)
+        except RuntimeError as e:
+            out["membership_error"] = str(e)
+            # Keep the last verified identity for this exact membership, never for a rejoined node.
+            cached = settings().get("identity", {})
+            if cached.get("node_id") == out["node_id"]:
+                out["region"], out["is_main"] = cached.get("region", ""), cached.get("is_main", False)
         for n in out["nodes"]:
             if n["id"] == out["node_id"]:
                 out["region"], out["is_main"] = n["region"], n["main"]
+                identity = {"node_id": n["id"], "region": n["region"], "is_main": n["main"]}
+                if settings().get("identity") != identity:
+                    save_settings(identity=identity)
             if n["leader"]:
                 out["leader"] = {"hostname": n["hostname"], "region": n["region"]}
     return out
@@ -188,7 +200,8 @@ def peer_info() -> dict:
         reserved = {k: v["hostname"] for k, v in RESERVED.items() if v["until"] > now}
     main = next((n["hostname"] for n in sw["nodes"] if n["main"]), None)
     return {"manager": True, "hostname": HOST, "is_main": sw["is_main"], "addr": netbird()["ip"],
-            "regions": regions_from(sw["nodes"]), "reserved": reserved, "main": main, "leader": sw["leader"]}
+            "regions": regions_from(sw["nodes"]), "reserved": reserved, "main": main, "leader": sw["leader"],
+            "membership_error": sw["membership_error"]}
 
 
 def peer_enroll(body: dict, client: str) -> dict:
@@ -200,6 +213,8 @@ def peer_enroll(body: dict, client: str) -> dict:
     info = peer_info()
     if not info["manager"]:
         raise Reject("this PC is not a swarm manager")
+    if info.get("membership_error"):
+        raise Reject("Swarm membership is unavailable. Reconnect the existing managers before joining a region")
     taken = info["regions"][region]
     if taken:
         raise Reject(f"{region} is already taken by {taken['hostname']} (node {taken['state']}). "

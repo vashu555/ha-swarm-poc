@@ -106,6 +106,13 @@ function leaveCard() {
     <button class="danger" ${S.job.running ? "disabled" : ""} onclick="if(confirm('Disconnect this PC from the swarm?'))act('/api/leave',{})">Leave the swarm</button>${errBox()}</div>`;
 }
 
+function recoveryCard() {
+  return `<div class="card"><h2>${S.swarm.region ? `You are ${esc(S.swarm.region)}${S.swarm.is_main ? ' · MAIN PC' : ''}` : 'This PC is already in the swarm'}</h2>
+    <div class="msg bad">Manager connection unavailable. Your region has not been released. Docker cannot currently read cluster membership.</div>
+    <p>Keep the other manager PCs connected to NetBird with Ubuntu running. This page will recover automatically when a manager majority is reachable. Do not choose another region or create another swarm.</p>
+    <pre class="log">${esc(S.swarm.membership_error || '')}</pre></div>${peersCard()}${jobBox()}`;
+}
+
 // ------------------------------------------------------------------ step 1: NetBird
 function viewNetbird() {
   if (!S.netbird.installed) return `<div class="card"><h2>NetBird is not installed in Ubuntu</h2>
@@ -222,10 +229,10 @@ async function tick() {
   if (v === "combined" && !sw.is_main) v = "zone";
   $("#tabs").innerHTML = joined ? `<a href="#/zone" class="${v === "zone" ? "on" : ""}">My zone</a>${sw.is_main ? `<a href="#/combined" class="${v === "combined" ? "on" : ""}">All zones</a>` : ""}` : "";
   try {
-    if (v === "zone") Z = await api("/api/zone");
-    if (v === "combined") C = await api("/api/combined");
+    if (!S.swarm.membership_error && v === "zone") Z = await api("/api/zone");
+    if (!S.swarm.membership_error && v === "combined") C = await api("/api/combined");
   } catch (e) { lastErr = e.message; }
-  const html = v === "setup" ? (!S.netbird.connected ? viewNetbird() : viewChoose()) : v === "zone" ? viewZone() : viewCombined();
+  const html = S.swarm.membership_error ? recoveryCard() : v === "setup" ? (!S.netbird.connected ? viewNetbird() : viewChoose()) : v === "zone" ? viewZone() : viewCombined();
   const focus = document.activeElement && document.activeElement.id, val = focus && document.activeElement.value;
   const log = $("#joblog"), atEnd = !log || log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
   if (!(focus && ["key", "mgmt", "mainip"].includes(focus))) $("#app").innerHTML = html;   // don't wipe what is being typed

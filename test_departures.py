@@ -14,6 +14,26 @@ def node(id='self', state='ready', manager=True, leader=False):
     return dict(id=id, state=state, manager=manager, leader=leader, reachability='reachable', hostname=id, region='delhi')
 
 class Departures(unittest.TestCase):
+    def test_lost_quorum_retains_verified_local_identity(self):
+        identity = {'node_id': 'self', 'region': 'mumbai', 'is_main': True}
+        with patch.object(c, 'docker_info', return_value=info()), patch.object(c, 'nodes', side_effect=RuntimeError('no leader')), patch.object(c, 'settings', return_value={'identity': identity}):
+            sw = c.swarm()
+        self.assertEqual(sw['region'], 'mumbai')
+        self.assertTrue(sw['is_main'])
+        self.assertEqual(sw['membership_error'], 'no leader')
+
+    def test_rejoined_node_does_not_inherit_old_identity(self):
+        identity = {'node_id': 'old-node', 'region': 'mumbai', 'is_main': True}
+        with patch.object(c, 'docker_info', return_value=info()), patch.object(c, 'nodes', side_effect=RuntimeError('no leader')), patch.object(c, 'settings', return_value={'identity': identity}):
+            sw = c.swarm()
+        self.assertEqual(sw['region'], '')
+        self.assertEqual(sw['membership_error'], 'no leader')
+
+    def test_membership_failure_blocks_new_enrollment(self):
+        with patch.object(c, 'peer_info', return_value={'manager': True, 'membership_error': 'no leader'}):
+            with self.assertRaises(c.Reject):
+                c.peer_enroll({'region': 'delhi'}, '100.93.151.120')
+
     def setUp(self):
         c.JOB['log'] = []
 
