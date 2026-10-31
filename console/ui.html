@@ -65,6 +65,8 @@ a{color:var(--accent)}
   <nav class="tabs" id="tabs"></nav>
 </header>
 <main id="app"><div class="card">Loading…</div></main>
+<!-- outside #app so the refresh every 2.5 s doesn't reload it -->
+<div id="flowmap" style="max-width:1180px;margin:0 auto;padding:0 20px 20px"></div>
 
 <script>
 const REG = {
@@ -73,7 +75,7 @@ const REG = {
   delhi:     {c: "var(--delhi)",     title: "Delhi",     what: "Third region: the tie-breaking vote. Third copy of every database and broker. Was oracle."},
 };
 const KINDS = ["etcd","pg","pgbouncer","kafka","rabbit","redis","sentinel","haproxy","api","relay","router","feed","bridge","worker","exchange","control","registry","web"];
-let S = null, Z = null, C = null, lastErr = "";
+let S = null, Z = null, C = null, L = null, lastErr = "";   // L: the trading lab's live state, per zone
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const view = () => (location.hash.replace("#/", "") || "auto");
@@ -160,9 +162,58 @@ function peersCard() {
     : `<p class="muted">No other PCs on the network yet.</p>`}</div>`;
 }
 
+// ------------------------------------------------------------------ the trading lab, per zone (from the control service)
+const zoneBadge = z => z ? `<span class="badge r" style="background:${(REG[z] || {}).c || "var(--muted)"}">${REG[z] ? REG[z].title : esc(z)}</span>`
+                         : `<span class="badge r" style="background:var(--bad)">NONE: electing…</span>`;
+
+function zoneLabCard(region) {
+  if (!L) return `<div class="card">Loading the trading lab…</div>`;
+  if (!L.ok) return `<div class="card"><h2>Trading lab</h2><p class="muted">${esc(L.error)}. Deploy the lab (or the 3-zone pilot) from <b>All zones</b> on the main PC.</p></div>`;
+  const comps = L.zones[region] || [], R = REG[region];
+  const running = comps.filter(c => c.state === "running").length, down = L.zones_down.includes(region);
+  const rows = comps.map(c => `<tr><td><span class="dot ${dotFor(c.state)}"></span><b>${esc(c.name)}</b></td>
+     <td>${c.role ? `<span class="badge">${esc(c.role)}</span>` : ""}</td>
+     <td>${c.in || c.out ? `${c.in} in · ${c.out} out /s` : `<span class="muted">idle</span>`}</td><td class="muted">${esc(c.text)}</td>
+     <td>${c.state === "running" ? `<button class="sec" onclick="act('/api/lab/chaos',{target:'${c.name}',action:'stop'})">Stop</button>`
+                                 : `<button onclick="act('/api/lab/chaos',{target:'${c.name}',action:'start'})">Start</button>`}</td></tr>`).join("");
+  return `<div class="card" style="border-top:4px solid ${R.c}"><div class="hero"><span class="big" style="--c:${R.c}">${R.title} zone</span>
+      <span class="badge">${running}/${comps.length} components running</span>${down ? `<span class="badge r" style="background:var(--bad)">ZONE DOWN</span>` : ""}
+      <span style="flex:1"></span>
+      <button class="danger" ${S.job.running || down ? "disabled" : ""} onclick="if(confirm('Disable the whole ${R.title} zone? Every service in it stops, as if the zone were lost.'))act('/api/zone-drill',{region:'${region}',action:'down'})">Disable zone</button>
+      <button ${S.job.running || (!down && running === comps.length) ? "disabled" : ""} onclick="act('/api/zone-drill',{region:'${region}',action:'up'})">Enable zone</button></div>
+    <p class="muted">Each row is one real service of this zone. <b>Stop</b> fails just that component; <b>Disable zone</b> stops them all, like losing the zone.
+      Watch "Data path right now" below (and All zones on the main PC): leaders and traffic move to the other zones, then come back.</p>
+    ${L.ready ? "" : `<div class="msg ok">Lab starting: ${esc(L.boot || "")}</div>`}
+    <table><tr><th>Component</th><th>Role now</th><th>Traffic</th><th>State</th><th></th></tr>${rows}</table>${errBox()}</div>`;
+}
+
+function dataPathCard(highlight) {
+  if (!L || !L.ok) return "";
+  const rows = L.path.map(p => `<tr ${highlight && p.zone === highlight ? `style="background:color-mix(in srgb,var(--accent) 10%,transparent)"` : ""}>
+      <td>${esc(p.what)}</td><td><b>${esc(p.who || "—")}</b></td><td>${zoneBadge(p.zone)}</td></tr>`).join("");
+  const kafka = L.kafka.map(k => `<span class="cell">${zoneBadge(k.zone)}&nbsp;${esc(k.broker)}: <b>${k.partitions}</b> partitions</span>`).join("")
+                || `<span class="muted">no broker answering</span>`;
+  const total = Object.values(L.api_rps).reduce((a, b) => a + b, 0);
+  const api = S.regions.map(r => `<div style="margin:3px 0"><span style="display:inline-block;width:90px">${REG[r].title}</span>
+      <span style="display:inline-block;vertical-align:middle;height:10px;border-radius:5px;background:${REG[r].c};width:${total ? Math.round(260 * L.api_rps[r] / total) : 0}px"></span>
+      <b>${L.api_rps[r]}</b> req/s</div>`).join("");
+  const evs = L.events.map(e => `<div style="margin:2px 0"><span class="muted">${new Date(e.t * 1000).toLocaleTimeString()}</span>
+      <span class="dot ${e.cls === "bad" ? "bad" : e.cls === "warn" ? "warn" : ["good", "ok"].includes(e.cls) ? "ok" : ""}"></span>${esc(e.text)}</div>`).join("");
+  return `<div class="grid g2"><div class="card"><h2>Data path right now</h2>
+      <table><tr><th>What</th><th>Who</th><th>Zone</th></tr>${rows}</table>
+      <h2 style="margin-top:14px">Kafka: who leads the partitions</h2>${kafka}
+      <h2 style="margin-top:14px">Trader requests reaching APIs, by zone</h2>${api}</div>
+    <div class="card"><h2>What changed (live)</h2><p class="muted" style="margin-top:0">Leader moves, components stopping and starting, recovery times: measured, not assumed.</p>
+      <div style="font-size:13px;max-height:440px;overflow:auto">${evs || `<span class="muted">no events yet</span>`}</div></div></div>`;
+}
+
 // ------------------------------------------------------------------ my zone
-function viewZone() {
+function viewZone(region) {
   if (!Z) return `<div class="card">Loading this zone…</div>`;
+  if (region && region !== Z.region) {          // pilot: another zone that also runs on this PC
+    return `<div class="card"><p class="muted" style="margin:0">Pilot: the ${REG[region].title} zone runs on this PC too (on three real PCs it would be
+      its own PC). The controls below act on its real services.</p></div>${zoneLabCard(region)}${dataPathCard(region)}${jobBox()}`;
+  }
   const R = REG[Z.region] || {c: "var(--muted)", title: Z.region || "?"};
   const me = Z.node || {}, L = Z.leader;
   const memUsed = Z.mem.total && Z.mem.available ? `${((Z.mem.total - Z.mem.available) / 1024).toFixed(1)} of ${(Z.mem.total / 1024).toFixed(1)} GB` : "?";
@@ -185,8 +236,10 @@ function viewZone() {
     <div class="card"><h2>Pages on this PC</h2>${Z.links.length ? Z.links.map(l => `<div><a href="${esc(l[1])}" target="_blank">${esc(l[0])}</a> <span class="muted">${esc(l[1])}</span></div>`).join("") : `<p class="muted">Nothing published here yet.</p>`}
       <h2 style="margin-top:14px">Database cluster (seen from here)</h2>${pg}</div>
   </div>
-  <div class="card"><h2>Services in this zone <span class="muted">(${Z.services.length}, CPU/memory ${Z.stats_age < 30 ? "live" : "loading"})</span></h2>
-    ${rows ? `<table><tr><th>Service</th><th>Stack</th><th>Status</th><th>CPU</th><th>Memory</th></tr>${rows}</table>` : `<p class="muted">Nothing runs here yet. ${Z.is_main ? "Use the combined view to build images and deploy." : "The main PC deploys the lab."}</p>`}</div>
+  ${zoneLabCard(Z.region)}
+  ${dataPathCard(Z.region)}
+  <details class="card"><summary><b>Containers on this PC</b> <span class="muted">(${Z.services.length}, CPU/memory ${Z.stats_age < 30 ? "live" : "loading"})</span></summary>
+    ${rows ? `<table><tr><th>Service</th><th>Stack</th><th>Status</th><th>CPU</th><th>Memory</th></tr>${rows}</table>` : `<p class="muted">Nothing runs here yet. ${Z.is_main ? "Use the combined view to build images and deploy." : "The main PC deploys the lab."}</p>`}</details>
   ${peersCard()}
   ${leaveCard()}
   ${jobBox()}`;
@@ -210,7 +263,16 @@ function viewCombined() {
   const pg = C.patroni.length ? C.patroni.map(m => `<span class="cell"><span class="dot ${dotFor(m.state)}"></span><b>${esc(m.name)}</b>&nbsp;${esc(m.role)}</span>`).join("") : `<span class="muted">no database running yet</span>`;
   const acts = Object.entries(C.actions).map(([k, v]) => `<button class="${/rm$/.test(k) ? "sec" : ""}" ${S.job.running ? "disabled" : ""} onclick="if(confirm('${esc(v)}?'))act('/api/action',{name:'${k}'})">${esc(v)}</button>`).join(" ");
   const allReady = S.regions.every(r => C.nodes.filter(n => n.region === r && n.state === "ready" && n.availability === "active").length === 1);
-  const zoneCards = S.regions.map(r => {
+  const pilotCards = C.pilot && L && L.ok ? S.regions.map(r => {
+    const comps = L.zones[r] || [], R = REG[r], running = comps.filter(c => c.state === "running").length, down = L.zones_down.includes(r);
+    const leads = comps.filter(c => /LEADER|MASTER|ACTIVE/.test(c.role)).map(c => `${esc(c.name)} ${esc(c.role.toLowerCase())}`).join(", ");
+    return `<div class="card" style="border-top:4px solid ${R.c}"><h2><a href="#/zone/${r}" style="color:${R.c}">${esc(R.title)} ↗</a></h2>
+      <p><b>${down ? "ZONE DOWN" : running === comps.length ? "All running" : `${comps.length - running} stopped`}</b> · ${running}/${comps.length} components</p>
+      <p class="muted" style="min-height:38px">${leads ? "Leads: " + leads : "Leads nothing right now"}</p>
+      <button class="danger" ${S.job.running || down ? "disabled" : ""} onclick="if(confirm('Disable the whole ${R.title} zone?'))act('/api/zone-drill',{region:'${r}',action:'down'})">Disable zone</button>
+      <button ${S.job.running || (!down && running === comps.length) ? "disabled" : ""} onclick="act('/api/zone-drill',{region:'${r}',action:'up'})">Enable zone</button></div>`;
+  }).join("") : "";
+  const zoneCards = pilotCards || S.regions.map(r => {
     const n = C.nodes.find(n => n.region === r), R = REG[r];
     const tasks = C.tasks.filter(t => t.region === r && t.service.startsWith('hal_'));
     const running = tasks.filter(t => /^Running\b/i.test(t.state)).length;
@@ -222,8 +284,11 @@ function viewCombined() {
   return `<div class="card"><div class="hero"><span class="big" style="--c:var(--accent)">All zones</span>
       <span class="badge">Leader: ${C.leader ? esc(C.leader.hostname) + " (" + esc(C.leader.region) + ")" : "?"}</span>
       <span class="badge">${C.nodes.length} PCs</span></div></div>
-    <div class="card"><h2>Live zone outages and recovery</h2><p class="muted">Zone down stops that PC's swarm workloads; Zone up starts them again. Managers and this console stay connected. Observe one zone at a time. Counts show Docker task state, not database or application health.</p></div>
+    <div class="card"><h2>Live zone outages and recovery</h2><p class="muted">${C.pilot
+      ? `<b>Pilot:</b> all three zones run on this PC. Disable zone stops every service of that zone, as if the zone were lost; each zone's page (click its name) has per-component Stop/Start. Watch the data path and the flow map below move to the surviving zones.`
+      : `Zone down stops that PC's swarm workloads; Zone up starts them again. Managers and this console stay connected. Observe one zone at a time.`}</p></div>
     <div class="grid g3">${zoneCards}</div>
+    ${dataPathCard(null)}
     <div class="card"><h2>PCs (swarm nodes)</h2><p class="muted">Departed PCs are removed and their regions freed automatically after Docker detects them as down. Cleanup requires a manager majority. Closing the browser does not leave the swarm.</p><table><tr><th>Region</th><th>Host</th><th>NetBird IP</th><th>State</th><th>Availability</th><th>Manager</th><th></th></tr>${nodes}</table></div>
     <div class="card"><h2>Every service, by region</h2><p class="muted" style="margin-top:0">PostgreSQL: ${pg}</p>
       ${matrix ? `<table class="matrix"><tr><th>Kind</th>${S.regions.map(r => `<th style="color:${REG[r].c}">${REG[r].title}</th>`).join("")}</tr>${matrix}</table>` : `<p class="muted">Nothing deployed yet: build the images, then deploy the demo or the lab.</p>`}</div>
@@ -239,20 +304,33 @@ async function tick() {
   const sw = S.swarm, joined = sw.state === "active" && sw.region;
   $("#host").textContent = S.hostname + (S.netbird.ip ? " · " + S.netbird.ip : "");
   $("#rolebadge").innerHTML = joined ? `<span class="badge r" style="background:${REG[sw.region].c}">${REG[sw.region].title}${sw.is_main ? " · main" : ""}</span>` : "";
-  let v = view();
+  let [v, zr] = view().split("/");
   if (!joined) v = "setup"; else if (v === "auto" || v === "setup") v = "zone";
   if (v === "combined" && !sw.is_main) v = "zone";
-  $("#tabs").innerHTML = joined ? `<a href="#/zone" class="${v === "zone" ? "on" : ""}">My zone</a>${sw.is_main ? `<a href="#/combined" class="${v === "combined" ? "on" : ""}">All zones</a>` : ""}` : "";
+  const pilot = sw.is_main && !!(L && L.pilot);           // all three zones on this PC: one page per zone
+  const zoneRegion = pilot && S.regions.includes(zr) ? zr : sw.region;
+  $("#tabs").innerHTML = !joined ? "" : (pilot
+    ? S.regions.map(r => `<a href="#/zone/${r}" class="${v === "zone" && zoneRegion === r ? "on" : ""}">${REG[r].title}</a>`).join("")
+    : `<a href="#/zone" class="${v === "zone" ? "on" : ""}">My zone</a>`)
+    + (joined && sw.is_main ? `<a href="#/combined" class="${v === "combined" ? "on" : ""}">All zones</a>` : "");
   try {
     if (!S.swarm.membership_error && v === "zone") Z = await api("/api/zone");
     if (!S.swarm.membership_error && v === "combined") C = await api("/api/combined");
+    if (!S.swarm.membership_error && (v === "zone" || v === "combined")) L = await api("/api/lab").catch(() => null);
   } catch (e) { lastErr = e.message; }
-  const html = S.swarm.membership_error ? recoveryCard() : v === "setup" ? (!S.netbird.connected ? viewNetbird() : viewChoose()) : v === "zone" ? viewZone() : viewCombined();
+  const html = S.swarm.membership_error ? recoveryCard() : v === "setup" ? (!S.netbird.connected ? viewNetbird() : viewChoose()) : v === "zone" ? viewZone(zoneRegion) : viewCombined();
+  // the lab's own live flow map (moving dots between services, all three zones), only in All zones on the main PC
+  const fm = $("#flowmap"), wantMap = v === "combined" && L && L.ok && L.url.includes("127.0.0.1");
+  if (wantMap && !fm.firstChild) fm.innerHTML = `<div class="card"><h2>Live flow map: every service in all three zones</h2>
+      <p class="muted">The lab dashboard itself. Moving dots are real traffic between services; boxes turn red when a component or zone stops,
+      and the dots re-route to the surviving zones. <a href="http://127.0.0.1:9700" target="_blank">Open it full screen ↗</a></p>
+      <iframe src="http://127.0.0.1:9700" style="width:100%;height:1100px;border:1px solid var(--line);border-radius:10px;background:#fff"></iframe></div>`;
+  if (!wantMap && fm.firstChild) fm.innerHTML = "";
   const focus = document.activeElement && document.activeElement.id, val = focus && document.activeElement.value;
   const log = $("#joblog"), atEnd = !log || log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
   if (!(focus && ["key", "mgmt", "mainip"].includes(focus))) $("#app").innerHTML = html;   // don't wipe what is being typed
   const nl = $("#joblog"); if (nl && atEnd) nl.scrollTop = nl.scrollHeight;
-  document.title = (joined ? REG[sw.region].title + (v === "combined" ? " · all zones" : " · my zone") : "Choose a role") + " · HA Swarm";
+  document.title = (joined ? (v === "combined" ? "All zones" : REG[zoneRegion].title + " zone") : "Choose a role") + " · HA Swarm";
 }
 window.addEventListener("hashchange", tick);
 tick(); setInterval(tick, 2500);

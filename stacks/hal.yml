@@ -10,9 +10,11 @@
 version: "3.8"
 
 # ------------------------------------------------------------------ where things run
-x-mumbai:    &mumbai    {constraints: ["node.labels.region == mumbai"]}
-x-hyderabad: &hyderabad {constraints: ["node.labels.region == hyderabad"]}
-x-delhi:     &delhi     {constraints: ["node.labels.region == delhi"]}
+# Each region's services run on the PC labelled with that region. For the one-PC pilot, 30-deploy-lab.sh --pilot sets
+# HYDERABAD_ON=mumbai and DELHI_ON=mumbai: same services, same zone labels, all on the main PC.
+x-mumbai:    &mumbai    {constraints: ["node.labels.region == ${MUMBAI_ON:-mumbai}"]}
+x-hyderabad: &hyderabad {constraints: ["node.labels.region == ${HYDERABAD_ON:-hyderabad}"]}
+x-delhi:     &delhi     {constraints: ["node.labels.region == ${DELHI_ON:-delhi}"]}
 
 # Every service: exactly one copy, pinned to its region. "dnsrr": its name resolves straight to the container
 # (no virtual IP in between, which would cut connections idle for 15 min). stop-first: never two copies of a
@@ -24,23 +26,30 @@ x-deploy: &deploy
   update_config: {parallelism: 1, delay: 10s, order: stop-first, failure_action: pause}
 
 # ------------------------------------------------------------------ building blocks
+# dns 127.0.0.1: names of stopped services must fail fast. By default Docker's resolver forwards an unknown name
+# (e.g. etcd-2 while Hyderabad is down) to the host's DNS, which with NetBird took 8 s per lookup and slowed every
+# failover. The lab's containers only talk to each other, so "nothing upstream" makes "not found" instant (0.00 s).
 x-app: &app
   image: ${REGISTRY:-127.0.0.1:5000}/ha-lab-app:${TAG:-poc1}
   networks: [backbone]
+  dns: [127.0.0.1]
 
 x-pg: &pg
   image: ${REGISTRY:-127.0.0.1:5000}/ha-lab-postgres:${TAG:-poc1}
   networks: [backbone]
+  dns: [127.0.0.1]
   stop_grace_period: 30s             # let Patroni hand over or shut PostgreSQL down cleanly
 
 x-bouncer: &bouncer
   image: ${REGISTRY:-127.0.0.1:5000}/ha-lab-pgbouncer:${TAG:-poc1}
   networks: [backbone]
+  dns: [127.0.0.1]
 
 x-etcd-cmd: &etcd-cluster "etcd-1=http://etcd-1:2380,etcd-2=http://etcd-2:2380,etcd-3=http://etcd-3:2380"
 x-etcd: &etcd
   image: quay.io/coreos/etcd:v3.5.15
   networks: [backbone]
+  dns: [127.0.0.1]
 
 x-kafka-env: &kafka-env
   CLUSTER_ID: MkU3OEVBNTcwNTJENDM2Qk
@@ -71,10 +80,12 @@ x-kafka-env: &kafka-env
 x-kafka: &kafka
   image: apache/kafka:3.8.0
   networks: [backbone]
+  dns: [127.0.0.1]
 
 x-rabbit: &rabbit
   image: rabbitmq:3.13-management
   networks: [backbone]
+  dns: [127.0.0.1]
   entrypoint: ["sh", "/lab/rabbit-entry.sh"]
   environment: {LAB_ERLANG_COOKIE: haLabSharedErlangCookie2026}
   configs:
@@ -84,18 +95,21 @@ x-rabbit: &rabbit
 x-redis: &redis
   image: redis:7.4-alpine
   networks: [backbone]
+  dns: [127.0.0.1]
   entrypoint: ["sh", "/lab/redis-entry.sh"]
   configs: [{source: redis-entry, target: /lab/redis-entry.sh}]
 
 x-sentinel: &sentinel
   image: redis:7.4-alpine
   networks: [backbone]
+  dns: [127.0.0.1]
   entrypoint: ["sh", "/lab/sentinel-entry.sh"]
   configs: [{source: sentinel-entry, target: /lab/sentinel-entry.sh}]
 
 x-haproxy: &haproxy
   image: haproxy:2.9-alpine
   networks: [backbone]
+  dns: [127.0.0.1]
   configs: [{source: haproxy-edge, target: /usr/local/etc/haproxy/haproxy.cfg}]
   secrets: [{source: lab-pem, target: lab.pem}]          # → /run/secrets/lab.pem
   ports:                                                  # host mode: published on this region's PC only
@@ -112,7 +126,7 @@ services:
               --listen-peer-urls, "http://0.0.0.0:2380", --initial-advertise-peer-urls, "http://etcd-1:2380",
               --listen-client-urls, "http://0.0.0.0:2379", --advertise-client-urls, "http://etcd-1:2379",
               --initial-cluster, *etcd-cluster, --initial-cluster-state, new, --initial-cluster-token, ha-lab]
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 128M}}}
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 128M}}}
   etcd-2:
     <<: *etcd
     hostname: etcd-2
@@ -121,7 +135,7 @@ services:
               --listen-peer-urls, "http://0.0.0.0:2380", --initial-advertise-peer-urls, "http://etcd-2:2380",
               --listen-client-urls, "http://0.0.0.0:2379", --advertise-client-urls, "http://etcd-2:2379",
               --initial-cluster, *etcd-cluster, --initial-cluster-state, new, --initial-cluster-token, ha-lab]
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 128M}}}
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 128M}}}
   etcd-3:
     <<: *etcd
     hostname: etcd-3
@@ -130,7 +144,7 @@ services:
               --listen-peer-urls, "http://0.0.0.0:2380", --initial-advertise-peer-urls, "http://etcd-3:2380",
               --listen-client-urls, "http://0.0.0.0:2379", --advertise-client-urls, "http://etcd-3:2379",
               --initial-cluster, *etcd-cluster, --initial-cluster-state, new, --initial-cluster-token, ha-lab]
-    deploy: {<<: *deploy, placement: *delhi, resources: {limits: {memory: 128M}}}
+    deploy: {<<: *deploy, placement: *delhi, labels: {lab.region: delhi}, resources: {limits: {memory: 128M}}}
 
   # ------------------------------------------------------------------ PostgreSQL ×3 with Patroni
   pg-1:
@@ -139,31 +153,31 @@ services:
     environment: {PATRONI_NAME: pg-1, PATRONI_RESTAPI_CONNECT_ADDRESS: "pg-1:8008", PATRONI_POSTGRESQL_CONNECT_ADDRESS: "pg-1:5432",
                   PATRONI_ETCD3_HOSTS: "etcd-1:2379,etcd-2:2379,etcd-3:2379"}
     volumes: [pg-1:/var/lib/postgresql/data, backup-repo:/backup, {type: tmpfs, target: /dev/shm, tmpfs: {size: 268435456}}]
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 512M}}}
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 512M}}}
   pg-2:
     <<: *pg
     hostname: pg-2
     environment: {PATRONI_NAME: pg-2, PATRONI_RESTAPI_CONNECT_ADDRESS: "pg-2:8008", PATRONI_POSTGRESQL_CONNECT_ADDRESS: "pg-2:5432",
                   PATRONI_ETCD3_HOSTS: "etcd-1:2379,etcd-2:2379,etcd-3:2379"}
     volumes: [pg-2:/var/lib/postgresql/data, backup-repo:/backup, {type: tmpfs, target: /dev/shm, tmpfs: {size: 268435456}}]
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 512M}}}
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 512M}}}
   pg-3:
     <<: *pg
     hostname: pg-3
     environment: {PATRONI_NAME: pg-3, PATRONI_RESTAPI_CONNECT_ADDRESS: "pg-3:8008", PATRONI_POSTGRESQL_CONNECT_ADDRESS: "pg-3:5432",
                   PATRONI_ETCD3_HOSTS: "etcd-1:2379,etcd-2:2379,etcd-3:2379"}
     volumes: [pg-3:/var/lib/postgresql/data, backup-repo:/backup, {type: tmpfs, target: /dev/shm, tmpfs: {size: 268435456}}]
-    deploy: {<<: *deploy, placement: *delhi, resources: {limits: {memory: 512M}}}
+    deploy: {<<: *deploy, placement: *delhi, labels: {lab.region: delhi}, resources: {limits: {memory: 512M}}}
 
   # ------------------------------------------------------------------ PgBouncer ×2 (each follows the Patroni leader)
   pgbouncer-1:
     <<: *bouncer
     hostname: pgbouncer-1
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 64M}}}
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 64M}}}
   pgbouncer-2:
     <<: *bouncer
     hostname: pgbouncer-2
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 64M}}}
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 64M}}}
 
   # ------------------------------------------------------------------ Kafka ×3 (KRaft: each node is broker + controller)
   kafka-1:
@@ -171,36 +185,36 @@ services:
     hostname: kafka-1
     volumes: [kafka-1:/var/lib/kafka/data]
     environment: {<<: *kafka-env, KAFKA_NODE_ID: 1, KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-1:9092", KAFKA_BROKER_RACK: mumbai}
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 520M}}}
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 520M}}}
   kafka-2:
     <<: *kafka
     hostname: kafka-2
     volumes: [kafka-2:/var/lib/kafka/data]
     environment: {<<: *kafka-env, KAFKA_NODE_ID: 2, KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-2:9092", KAFKA_BROKER_RACK: hyderabad}
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 520M}}}
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 520M}}}
   kafka-3:
     <<: *kafka
     hostname: kafka-3
     volumes: [kafka-3:/var/lib/kafka/data]
     environment: {<<: *kafka-env, KAFKA_NODE_ID: 3, KAFKA_ADVERTISED_LISTENERS: "PLAINTEXT://kafka-3:9092", KAFKA_BROKER_RACK: delhi}
-    deploy: {<<: *deploy, placement: *delhi, resources: {limits: {memory: 520M}}}
+    deploy: {<<: *deploy, placement: *delhi, labels: {lab.region: delhi}, resources: {limits: {memory: 520M}}}
 
   # ------------------------------------------------------------------ RabbitMQ ×3 (quorum queue for notifications)
   rabbit-1:
     <<: *rabbit
     hostname: rabbit-1
     volumes: [rabbit-1:/var/lib/rabbitmq]
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 330M}}}
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 330M}}}
   rabbit-2:
     <<: *rabbit
     hostname: rabbit-2
     volumes: [rabbit-2:/var/lib/rabbitmq]
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 330M}}}
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 330M}}}
   rabbit-3:
     <<: *rabbit
     hostname: rabbit-3
     volumes: [rabbit-3:/var/lib/rabbitmq]
-    deploy: {<<: *deploy, placement: *delhi, resources: {limits: {memory: 330M}}}
+    deploy: {<<: *deploy, placement: *delhi, labels: {lab.region: delhi}, resources: {limits: {memory: 330M}}}
 
   # ------------------------------------------------------------------ Redis ×3 + Sentinel ×3 (sessions)
   redis-1:
@@ -208,47 +222,54 @@ services:
     hostname: redis-1
     volumes: [redis-1:/data]
     environment: {ME: redis-1}
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 64M}}}
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 64M}}}
   redis-2:
     <<: *redis
     hostname: redis-2
     volumes: [redis-2:/data]
     environment: {ME: redis-2, REPLICA_OF: redis-1}
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 64M}}}
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 64M}}}
   redis-3:
     <<: *redis
     hostname: redis-3
     volumes: [redis-3:/data]
     environment: {ME: redis-3, REPLICA_OF: redis-1}
-    deploy: {<<: *deploy, placement: *delhi, resources: {limits: {memory: 64M}}}
+    deploy: {<<: *deploy, placement: *delhi, labels: {lab.region: delhi}, resources: {limits: {memory: 64M}}}
   sentinel-1:
     <<: *sentinel
     hostname: sentinel-1
     volumes: [sentinel-1:/data]
     environment: {ME: sentinel-1}
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 32M}}}
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 32M}}}
   sentinel-2:
     <<: *sentinel
     hostname: sentinel-2
     volumes: [sentinel-2:/data]
     environment: {ME: sentinel-2}
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 32M}}}
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 32M}}}
   sentinel-3:
     <<: *sentinel
     hostname: sentinel-3
     volumes: [sentinel-3:/data]
     environment: {ME: sentinel-3}
-    deploy: {<<: *deploy, placement: *delhi, resources: {limits: {memory: 32M}}}
+    deploy: {<<: *deploy, placement: *delhi, labels: {lab.region: delhi}, resources: {limits: {memory: 32M}}}
 
   # ------------------------------------------------------------------ edge load balancers (one per region with traders)
   haproxy-1:
     <<: *haproxy
     hostname: haproxy-1
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 64M}}}
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 64M}}}
   haproxy-2:
     <<: *haproxy
     hostname: haproxy-2
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 64M}}}
+    ports:                           # the pilot moves these to 8444 / 8405 so both edges fit on one PC
+      - target: 8443
+        published: ${HAPROXY2_HTTPS:-8443}
+        mode: host
+      - target: 8404
+        published: ${HAPROXY2_STATS:-8404}
+        mode: host
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 64M}}}
 
   # ------------------------------------------------------------------ the application (one image, many roles)
   api-1:
@@ -256,108 +277,107 @@ services:
     hostname: api-1
     command: [python, -u, api.py]
     environment: {SERVICE: api-1, SITE: mumbai, PGBOUNCERS: "pgbouncer-1,pgbouncer-2"}
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 160M}},
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 160M}},
              update_config: {parallelism: 1, delay: 10s, order: start-first, failure_action: rollback}}
   api-2:
     <<: *app
     hostname: api-2
     command: [python, -u, api.py]
     environment: {SERVICE: api-2, SITE: mumbai, PGBOUNCERS: "pgbouncer-1,pgbouncer-2"}
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 160M}},
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 160M}},
              update_config: {parallelism: 1, delay: 10s, order: start-first, failure_action: rollback}}
   api-3:
     <<: *app
     hostname: api-3
     command: [python, -u, api.py]
     environment: {SERVICE: api-3, SITE: hyderabad, PGBOUNCERS: "pgbouncer-2,pgbouncer-1"}
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 160M}},
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 160M}},
              update_config: {parallelism: 1, delay: 10s, order: start-first, failure_action: rollback}}
   api-4:
     <<: *app
     hostname: api-4
     command: [python, -u, api.py]
     environment: {SERVICE: api-4, SITE: hyderabad, PGBOUNCERS: "pgbouncer-2,pgbouncer-1"}
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 160M}},
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 160M}},
              update_config: {parallelism: 1, delay: 10s, order: start-first, failure_action: rollback}}
   relay-1:
     <<: *app
     hostname: relay-1
     command: [python, -u, relay.py]
     environment: {SERVICE: relay-1, SITE: mumbai, PGBOUNCERS: "pgbouncer-1,pgbouncer-2"}
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 160M}}}
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 160M}}}
   relay-2:
     <<: *app
     hostname: relay-2
     command: [python, -u, relay.py]
     environment: {SERVICE: relay-2, SITE: hyderabad, PGBOUNCERS: "pgbouncer-2,pgbouncer-1"}
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 160M}}}
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 160M}}}
   router-1:
     <<: *app
     hostname: router-1
     command: [python, -u, router.py]
     environment: {SERVICE: router-1, SITE: mumbai, PGBOUNCERS: "pgbouncer-1,pgbouncer-2"}
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 160M}}}
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 160M}}}
   router-2:
     <<: *app
     hostname: router-2
     command: [python, -u, router.py]
     environment: {SERVICE: router-2, SITE: hyderabad, PGBOUNCERS: "pgbouncer-2,pgbouncer-1"}
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 160M}}}
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 160M}}}
   feed-1:
     <<: *app
     hostname: feed-1
     command: [python, -u, feed.py]
     environment: {SERVICE: feed-1, SITE: mumbai, TICKS_TOPIC: marketdata.ticks.lineA}
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 160M}}}
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 160M}}}
   feed-2:
     <<: *app
     hostname: feed-2
     command: [python, -u, feed.py]
     environment: {SERVICE: feed-2, SITE: delhi, TICKS_TOPIC: marketdata.ticks.lineB}
-    deploy: {<<: *deploy, placement: *delhi, resources: {limits: {memory: 160M}}}
+    deploy: {<<: *deploy, placement: *delhi, labels: {lab.region: delhi}, resources: {limits: {memory: 160M}}}
   bridge-1:
     <<: *app
     hostname: bridge-1
     command: [python, -u, bridge.py]
     environment: {SERVICE: bridge-1, SITE: hyderabad, RABBITS: "rabbit-2,rabbit-1,rabbit-3"}
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 160M}}}
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 160M}}}
   bridge-2:
     <<: *app
     hostname: bridge-2
     command: [python, -u, bridge.py]
     environment: {SERVICE: bridge-2, SITE: delhi, RABBITS: "rabbit-3,rabbit-2,rabbit-1"}
-    deploy: {<<: *deploy, placement: *delhi, resources: {limits: {memory: 160M}}}
+    deploy: {<<: *deploy, placement: *delhi, labels: {lab.region: delhi}, resources: {limits: {memory: 160M}}}
   worker-1:
     <<: *app
     hostname: worker-1
     command: [python, -u, worker.py]
     environment: {SERVICE: worker-1, SITE: hyderabad, PGBOUNCERS: "pgbouncer-2,pgbouncer-1", RABBITS: "rabbit-2,rabbit-1,rabbit-3"}
-    deploy: {<<: *deploy, placement: *hyderabad, resources: {limits: {memory: 160M}}}
+    deploy: {<<: *deploy, placement: *hyderabad, labels: {lab.region: hyderabad}, resources: {limits: {memory: 160M}}}
   worker-2:
     <<: *app
     hostname: worker-2
     command: [python, -u, worker.py]
     environment: {SERVICE: worker-2, SITE: delhi, PGBOUNCERS: "pgbouncer-2,pgbouncer-1", RABBITS: "rabbit-3,rabbit-1,rabbit-2"}
-    deploy: {<<: *deploy, placement: *delhi, resources: {limits: {memory: 160M}}}
+    deploy: {<<: *deploy, placement: *delhi, labels: {lab.region: delhi}, resources: {limits: {memory: 160M}}}
 
   # ------------------------------------------------------------------ outside the regions' clusters (on PC 1)
   exchange:                          # SIMULATED exchange, lab only (never IBKR, never a real market)
     <<: *app
     hostname: exchange
     command: [python, -u, exchange.py, --host, 0.0.0.0, --port, "9390"]
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 256M}}}
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 256M}}}
   control:                           # traders, audit, bootstrap (schema, accounts, Kafka topics) and the dashboard
     <<: *app
     hostname: control
     command: [python, -u, control.py]
-    # PROJECT: the dashboard finds containers by Docker Compose labels, which Swarm doesn't set. Pointing it at a
-    # project that doesn't exist keeps its chaos and auto-heal buttons away from Swarm's containers: Swarm itself
-    # restarts failed tasks here, and scripts/chaos.sh replaces the buttons.
+    # LAYOUT swarm: control reads every component's state from Swarm (a manager sees all PCs) and its zone and
+    # component buttons scale Swarm services to 0 / 1. control.py comes from the lab source on the main PC.
     environment: {SERVICE: control, SITE: ops, PGBOUNCERS: "pgbouncer-1,pgbouncer-2", DB_USER: app, DB_PASSWORD: apppass,
-                  PROJECT: swarm-not-compose}
+                  LAYOUT: swarm, SWARM_STACK: hal}
     ports: [{target: 9700, published: 9700, mode: host}]
-    volumes: ["/var/run/docker.sock:/var/run/docker.sock"]
-    deploy: {<<: *deploy, placement: *mumbai, resources: {limits: {memory: 300M}}}
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "${LAB_SRC:-/mnt/d/HA_Trading_Lab}/app/control.py:/app/control.py:ro"]
+    deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 300M}}}
 
 networks:
   backbone:

@@ -543,8 +543,16 @@ def job_zone(region: str, action: str) -> None:
     sw = swarm()
     if sw.get("membership_error"):
         raise Reject("Restore the manager connection before running a zone drill")
-    if not sw["is_main"]:
-        raise Reject("Use the main PC for zone drills")
+    if not sw["is_main"] and region != sw["region"]:
+        raise Reject("From this PC you can switch only your own zone; the main PC can switch every zone")
+    if lab_is_pilot(sw):
+        # pilot: the three zones share this PC, so a zone outage = every service of that zone stops (0 copies)
+        log(f"{region}: {'stopping' if action == 'down' else 'starting'} every service of the zone (pilot on one PC)")
+        code, j = http_json(f"{lab_base()}/api/site", {"site": REGION_SITE[region], "action": action}, timeout=30)
+        if code != 200 or j.get("error"):
+            raise RuntimeError(j.get("error") or f"the lab's control service answered HTTP {code}")
+        log("done: watch the data path move in the live view")
+        return
     members = sw["nodes"]
     target = [n for n in members if n["region"] == region]
     if len(target) != 1 or target[0]["state"] != "ready":
@@ -575,11 +583,93 @@ def job_release(region: str) -> None:
     raise Reject(f"no node holds {region}")
 
 
+# ============================================================================ the trading lab's live state
+# The lab's control service (port 9700, on the main PC) already measures who leads what and how much traffic flows
+# between which services; with LAYOUT=swarm it reads every PC's tasks. The console shows that per zone.
+REGION_SITE = {"mumbai": "azure-z1", "hyderabad": "azure-z2", "delhi": "oracle"}
+SITE_REGION = {v: k for k, v in REGION_SITE.items()}
+PILOT = {"t": 0.0, "v": False}
+
+
+def lab_base() -> str:
+    """The control service: on this PC if it runs here, else on the main PC (over NetBird)."""
+    try:
+        socket.create_connection(("127.0.0.1", 9700), 0.5).close()
+        return "http://127.0.0.1:9700"
+    except OSError:
+        pass
+    main = next((n["addr"] for n in nodes() if n["main"]), None) or settings().get("main_ip")
+    return f"http://{main}:9700" if main else "http://127.0.0.1:9700"
+
+
+def lab_is_pilot(sw: dict | None = None) -> bool:
+    """Pilot = the lab is deployed with Hyderabad's services placed on the Mumbai PC (30-deploy-lab.sh --pilot)."""
+    if time.time() - PILOT["t"] < 10:
+        return PILOT["v"]
+    rc, out = sh(["docker", "service", "inspect", "hal_api-3", "--format", "{{json .Spec.TaskTemplate.Placement.Constraints}}"], 5)
+    PILOT.update(t=time.time(), v=rc == 0 and f"== {MAIN_REGION}" in out)
+    return PILOT["v"]
+
+
+def view_lab() -> dict:
+    base = lab_base()
+    code, st = http_json(f"{base}/api/state", timeout=4)
+    if code != 200:
+        return {"ok": False, "error": st.get("error") or f"the lab's control service is not answering at {base}"}
+    status = st.get("status") or {}
+    ctr, roles, flows = status.get("containers") or {}, status.get("roles") or {}, status.get("flows") or []
+
+    def zone_of(name):
+        c = ctr.get(name) or {}
+        return c.get("region") or SITE_REGION.get(c.get("site"), "")
+
+    def holder(prefix, role):
+        return next((n for n, v in roles.items() if n.startswith(prefix) and str(v).startswith(role)), None)
+
+    rate_in: dict = {}
+    rate_out: dict = {}
+    for f in flows:
+        rate_out[f["from"]] = rate_out.get(f["from"], 0) + f["rate"]
+        rate_in[f["to"]] = rate_in.get(f["to"], 0) + f["rate"]
+    zones = {r: [] for r in REGIONS}
+    for name, c in sorted(ctr.items()):
+        if zone_of(name) in zones:
+            zones[zone_of(name)].append({"name": name, "kind": c.get("kind"), "state": c.get("state"), "text": c.get("status_text", ""),
+                                         "role": roles.get(name, ""), "in": round(rate_in.get(name, 0), 1), "out": round(rate_out.get(name, 0), 1)})
+    api_rps = {r: 0.0 for r in REGIONS}
+    for f in flows:
+        if f["from"].startswith("haproxy-") and f["to"].startswith("api-") and zone_of(f["to"]) in api_rps:
+            api_rps[zone_of(f["to"])] += f["rate"]
+    path = []
+    for what, who in (("Orders are written to (PostgreSQL leader)", holder("pg-", "LEADER")),
+                      ("Orders sent to the exchange by (active router)", holder("router-", "ACTIVE")),
+                      ("Notifications queue led by (RabbitMQ)", holder("rabbit-", "QUEUE LEADER")),
+                      ("Sessions stored on (Redis master)", holder("redis-", "MASTER")),
+                      ("Database vote led by (etcd leader)", holder("etcd-", "LEADER"))):
+        path.append({"what": what, "who": who, "zone": zone_of(who) if who else ""})
+    kafka = [{"broker": n, "zone": zone_of(n), "partitions": int(m.group(1))}
+             for n, v in sorted(roles.items()) if n.startswith("kafka-") and (m := re.match(r"LEADS (\d+)", str(v)))]
+    return {"ok": True, "url": base, "ready": st.get("ready"), "boot": st.get("boot"), "zones": zones,
+            "zones_down": sorted(SITE_REGION.get(s, s) for s in st.get("zones_down") or []), "path": path, "kafka": kafka,
+            "api_rps": {k: round(v, 1) for k, v in api_rps.items()}, "audit": st.get("audit") or {},
+            "events": (st.get("events") or [])[:16], "pilot": lab_is_pilot()}
+
+
+def lab_chaos(target: str, action: str) -> dict:
+    if action not in ("stop", "start"):
+        raise Reject("stop or start")
+    code, j = http_json(f"{lab_base()}/api/chaos", {"target": target, "action": action}, timeout=20)
+    if code != 200 or j.get("error"):
+        raise Reject(j.get("error") or f"the lab's control service answered HTTP {code}")
+    return {"ok": True}
+
+
 ACTIONS = {                                    # main PC only: buttons in the combined view
     "images": ("Build and push images", job_script, "scripts/10-registry-and-images.sh"),
     "hello": ("Deploy the demo", job_script, "scripts/20-hello.sh"),
     "hello-rm": ("Remove the demo", job_script, "scripts/20-hello.sh", "rm"),
     "lab": ("Deploy the lab", job_script, "scripts/30-deploy-lab.sh"),
+    "pilot": ("Deploy the 3-zone pilot on this PC", job_script, "scripts/30-deploy-lab.sh", "--pilot"),
     "lab-rm": ("Remove the lab (data kept)", job_script, "scripts/teardown.sh", "lab"),
 }
 
@@ -682,7 +772,8 @@ def view_combined() -> dict:
         t["region"] = service_regions.get(t["service"], region_of.get(t["node"], ""))
     return {"nodes": sw["nodes"], "leader": sw["leader"], "regions": regions_from(sw["nodes"]), "tasks": tasks,
             "patroni": patroni(), "is_main": sw["is_main"],
-            "actions": {k: v[0] for k, v in ACTIONS.items()}, "lab_deployed": bool(service_regions)}
+            "actions": {k: v[0] for k, v in ACTIONS.items()}, "lab_deployed": bool(service_regions),
+            "pilot": bool(service_regions) and lab_is_pilot(sw)}
 
 
 def view_state() -> dict:
@@ -761,6 +852,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, view_zone())
             if method == "GET" and path == "/api/combined":
                 return self.send(200, view_combined())
+            if method == "GET" and path == "/api/lab":
+                return self.send(200, view_lab())
             if method == "POST":
                 b = self.body()
                 if path == "/api/netbird":
@@ -778,9 +871,9 @@ class Handler(BaseHTTPRequestHandler):
                 elif path == "/api/leave":
                     run_job("Leave the swarm", job_leave)
                 elif path == "/api/zone-drill":
-                    if not swarm()["is_main"]:
-                        raise Reject("Only the main PC can run zone drills")
                     run_job(f"Zone {b.get('region')} {b.get('action')}", job_zone, str(b.get("region", "")), str(b.get("action", "")))
+                elif path == "/api/lab/chaos":
+                    return self.send(200, lab_chaos(str(b.get("target", "")), str(b.get("action", ""))))
                 elif path == "/api/action":
                     if not swarm()["is_main"]:
                         raise Reject("only the main PC can do this")
