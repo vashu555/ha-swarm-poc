@@ -10,13 +10,7 @@ case "${1:-}" in
   lab) docker stack rm "$STACK" ;;
   all) docker stack rm "$STACK" hello infra ;;
   leave)
-    if [ "$(docker node ls -q 2>/dev/null | wc -l)" -le 1 ]; then docker swarm leave --force
-    else
-      me=$(docker info -f '{{.Swarm.NodeID}}')
-      docker node demote "$me" >/dev/null 2>&1 || true
-      docker swarm leave
-      echo "left. On a remaining manager remove it from the list: docker node rm $me"
-    fi ;;
+    python3 "$POC_DIR/console/console.py" --leave ;;
   *) sed -n '2,6p' "$0"; exit 1 ;;
 esac
 

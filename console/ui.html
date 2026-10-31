@@ -101,6 +101,11 @@ function jobBox() {
 }
 function errBox() { return lastErr ? `<div class="msg bad">${esc(lastErr)}</div>` : ""; }
 
+function leaveCard() {
+  return `<div class="card"><h2>Leave</h2><p class="muted">Disconnect this PC from the swarm. Its data volumes stay here. Remaining managers remove its node entry and free its region automatically. Closing this page does not leave the swarm.</p>
+    <button class="danger" ${S.job.running ? "disabled" : ""} onclick="if(confirm('Disconnect this PC from the swarm?'))act('/api/leave',{})">Leave the swarm</button>${errBox()}</div>`;
+}
+
 // ------------------------------------------------------------------ step 1: NetBird
 function viewNetbird() {
   if (!S.netbird.installed) return `<div class="card"><h2>NetBird is not installed in Ubuntu</h2>
@@ -135,7 +140,7 @@ function viewChoose() {
     <details style="margin-top:12px"><summary class="muted">Main PC not found automatically?</summary>
       <div class="row" style="margin-top:8px"><div><label>Main PC's NetBird IP</label><input id="mainip" value="${esc(S.settings.main_ip || "")}" placeholder="100.x.y.z"></div>
       <button class="sec" onclick="act('/api/settings',{main_ip:$('#mainip').value})">Save</button></div></details></div>
-    ${peersCard()}${jobBox()}`;
+    ${S.swarm.state !== "inactive" ? leaveCard() : ""}${peersCard()}${jobBox()}`;
 }
 
 function peersCard() {
@@ -173,8 +178,7 @@ function viewZone() {
   <div class="card"><h2>Services in this zone <span class="muted">(${Z.services.length}, CPU/memory ${Z.stats_age < 30 ? "live" : "loading"})</span></h2>
     ${rows ? `<table><tr><th>Service</th><th>Stack</th><th>Status</th><th>CPU</th><th>Memory</th></tr>${rows}</table>` : `<p class="muted">Nothing runs here yet. ${Z.is_main ? "Use the combined view to build images and deploy." : "The main PC deploys the lab."}</p>`}</div>
   ${peersCard()}
-  <div class="card"><h2>Leave</h2><p class="muted">Takes this PC out of the swarm; its region becomes free. Its data volumes stay on this PC.</p>
-    <button class="danger" ${S.job.running ? "disabled" : ""} onclick="if(confirm('Take this PC out of the swarm?'))act('/api/leave',{})">Leave the swarm</button>${errBox()}</div>
+  ${leaveCard()}
   ${jobBox()}`;
 }
 
@@ -184,7 +188,7 @@ function viewCombined() {
   const nodes = C.nodes.map(n => `<tr><td><span class="badge r" style="background:${(REG[n.region] || {}).c || "var(--muted)"}">${esc(n.region || "no region")}</span></td>
     <td>${esc(n.hostname)}${n.main ? " · <b>main</b>" : ""}</td><td>${esc(n.addr)}</td><td><span class="dot ${dotFor(n.state)}"></span>${esc(n.state)}</td>
     <td>${esc(n.availability)}</td><td>${n.leader ? "<b>★ Leader</b>" : esc(n.reachability)}</td>
-    <td>${n.state !== "ready" && n.region ? `<button class="sec" onclick="if(confirm('Release ${n.region}? The PC must be gone for good.'))act('/api/release',{region:'${n.region}'})">Release</button>` : ""}</td></tr>`).join("");
+    <td>${n.state === "down" ? `<span class="muted">Automatic cleanup pending</span>` : ""}</td></tr>`).join("");
   const byKind = {};
   for (const t of C.tasks) {
     const short = t.service.replace(/^(hal|infra|hello)_/, ""), kind = short.replace(/-\d+$/, "");
@@ -198,7 +202,7 @@ function viewCombined() {
   return `<div class="card"><div class="hero"><span class="big" style="--c:var(--accent)">All zones</span>
       <span class="badge">Leader: ${C.leader ? esc(C.leader.hostname) + " (" + esc(C.leader.region) + ")" : "?"}</span>
       <span class="badge">${C.nodes.length} PCs</span></div></div>
-    <div class="card"><h2>PCs (swarm nodes)</h2><table><tr><th>Region</th><th>Host</th><th>NetBird IP</th><th>State</th><th>Availability</th><th>Manager</th><th></th></tr>${nodes}</table></div>
+    <div class="card"><h2>PCs (swarm nodes)</h2><p class="muted">Departed PCs are removed and their regions freed automatically after Docker detects them as down. Cleanup requires a manager majority. Closing the browser does not leave the swarm.</p><table><tr><th>Region</th><th>Host</th><th>NetBird IP</th><th>State</th><th>Availability</th><th>Manager</th><th></th></tr>${nodes}</table></div>
     <div class="card"><h2>Every service, by region</h2><p class="muted" style="margin-top:0">PostgreSQL: ${pg}</p>
       ${matrix ? `<table class="matrix"><tr><th>Kind</th>${S.regions.map(r => `<th style="color:${REG[r].c}">${REG[r].title}</th>`).join("")}</tr>${matrix}</table>` : `<p class="muted">Nothing deployed yet: build the images, then deploy the demo or the lab.</p>`}</div>
     <div class="card"><h2>Deploy (main PC)</h2><p class="muted" style="margin-top:0">In order: build images once → demo (optional) → lab. Before deploying the lab, stop the single-PC lab on this PC

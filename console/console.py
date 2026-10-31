@@ -22,6 +22,7 @@ import re
 import shutil
 import socket
 import subprocess
+import sys
 import threading
 import time
 import urllib.request
@@ -202,7 +203,7 @@ def peer_enroll(body: dict, client: str) -> dict:
     taken = info["regions"][region]
     if taken:
         raise Reject(f"{region} is already taken by {taken['hostname']} (node {taken['state']}). "
-                     + ("If that PC is gone for good, the main PC can release the region." if taken["state"] != "ready" else ""))
+                     + ("Automatic cleanup is waiting for a manager majority; reconnect the other managers." if taken["state"] == "down" else ""))
     with RES_LOCK:
         r = RESERVED.get(region)
         if r and r["until"] > time.time() and r["ip"] != client:
@@ -388,7 +389,70 @@ def job_become(region: str) -> None:
 
 
 def job_leave() -> None:
-    stream(["bash", "scripts/teardown.sh", "leave"])
+    d = docker_info()
+    if not d.get("ok"):
+        raise Reject("Docker is unavailable; start Docker and retry Leave")
+    s = d["swarm"]
+    if s.get("LocalNodeState") == "inactive":
+        log("This PC has already left the swarm")
+        return
+    if s.get("ControlAvailable"):
+        members = nodes()
+        me = s.get("NodeID")
+        if not members or not any(n["id"] == me for n in members):
+            raise Reject("Cannot read swarm membership; restore the manager connection and retry Leave")
+        if len(members) == 1:
+            stream(["docker", "swarm", "leave", "--force"])
+            return
+        managers = [n for n in members if n["manager"]]
+        ready = [n for n in managers if n["state"] == "ready" and n["reachability"] == "reachable"]
+        if len(managers) < 2 or len(ready) < len(managers) // 2 + 1:
+            raise Reject("Leaving needs another reachable manager and a manager majority. Reconnect the other PCs, then retry Leave")
+        log("Demoting this manager before leaving …")
+        rc, out = sh(["docker", "node", "demote", me], 20)
+        log(out)
+        # The local daemon can briefly still report manager after Raft commits the change.
+        for _ in range(30):
+            current = docker_info()
+            if current.get("ok") and not current["swarm"].get("ControlAvailable"):
+                break
+            time.sleep(1)
+        else:
+            raise Reject("Manager demotion has not completed. Check connectivity and retry Leave. " + out[-300:])
+    # Do not force a manager out when demotion or quorum checks failed.
+    stream(["docker", "swarm", "leave"])
+    log("Disconnected from the swarm. Remaining managers automatically remove this node and free its region. Data volumes are preserved.")
+
+
+def cleanup_departed() -> None:
+    """Only the elected leader removes down nodes; Docker enforces quorum on each mutation."""
+    members = nodes()
+    local = docker_info().get("swarm") or {}
+    if not any(n["id"] == local.get("NodeID") and n["leader"] for n in members):
+        return
+    for n in members:
+        if n["state"] != "down" or n["id"] == local.get("NodeID"):
+            continue
+        # Re-read before each operation: a disconnected PC may already have returned.
+        fresh = next((x for x in nodes() if x["id"] == n["id"]), None)
+        if not fresh or fresh["state"] != "down":
+            continue
+        if fresh["manager"]:
+            rc, out = sh(["docker", "node", "demote", n["id"]], 10)
+            if rc:
+                continue  # no quorum: keep the region occupied and retry later
+        rc, out = sh(["docker", "node", "rm", n["id"]], 10)
+        if rc == 0:
+            print(f"Removed departed node {n['hostname']}; region {n['region']} is free", flush=True)
+
+
+def cleanup_loop() -> None:
+    while True:
+        try:
+            cleanup_departed()
+        except Exception as e:
+            print(f"Departure cleanup will retry: {e}", flush=True)
+        time.sleep(5)
 
 
 def job_script(*args: str) -> None:
@@ -630,10 +694,20 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> None:
     threading.Thread(target=stats_loop, daemon=True).start()
+    threading.Thread(target=cleanup_loop, daemon=True).start()
     srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"node console on :{PORT} (open http://127.0.0.1:{PORT} on this PC)", flush=True)
     srv.serve_forever()
 
 
 if __name__ == "__main__":
-    main()
+    if sys.argv[1:] == ["--leave"]:
+        try:
+            job_leave()
+        except Exception as e:
+            log(str(e))
+            print("\n".join(JOB["log"]))
+            sys.exit(1)
+        print("\n".join(JOB["log"]))
+    else:
+        main()
