@@ -3,7 +3,7 @@
 
   Open PowerShell (no admin needed if Ubuntu/WSL is already installed) and run:
 
-      irm https://raw.githubusercontent.com/22f1000513-Vanshaj/ha-swarm-poc/main/start-node.ps1 | iex
+      irm https://raw.githubusercontent.com/vashu555/ha-swarm-poc/main/start-node.ps1 | iex
 
   What it does, all inside Ubuntu (WSL):
     1. checks WSL + Ubuntu      2. turns on systemd            3. installs Docker Engine, NetBird, git, python3
@@ -13,7 +13,7 @@
 #>
 
 $ErrorActionPreference = 'Stop'
-$RepoUrl = 'https://github.com/22f1000513-Vanshaj/ha-swarm-poc.git'
+$RepoUrl = 'https://github.com/vashu555/ha-swarm-poc.git'
 $AppDir  = '/opt/ha-swarm-poc'
 $Console = 'http://127.0.0.1:9790'
 

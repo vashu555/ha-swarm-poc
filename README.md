@@ -26,7 +26,7 @@ main PC.
 **Then, in a normal PowerShell window:**
 
 ```powershell
-irm https://raw.githubusercontent.com/22f1000513-Vanshaj/ha-swarm-poc/main/start-node.ps1 | iex
+irm https://raw.githubusercontent.com/vashu555/ha-swarm-poc/main/start-node.ps1 | iex
 ```
 
 The command:
