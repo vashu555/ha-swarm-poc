@@ -10,8 +10,14 @@ region_ok "$REGION"
 IP=$(netbird_ip); [ -n "$IP" ] || die "NetBird is not connected (run scripts/02-join-netbird.sh first)"
 
 say "1/3  Can this PC reach the first PC ($MGR) through NetBird?"
-ping -c 2 -W 2 "$MGR" >/dev/null || die "no ping to $MGR: check 'netbird status' on both PCs and the NetBird access policy"
-timeout 3 bash -c "</dev/tcp/$MGR/2377" 2>/dev/null || die "port 2377 on $MGR is closed: is the swarm created there, and does the NetBird policy allow TCP 2377?"
+# NetBird connects lazily and the first packets can be lost, so keep trying for up to a minute
+reach=""
+for _ in $(seq 1 20); do
+  if ping -c 1 -W 2 "$MGR" >/dev/null 2>&1 && timeout 3 bash -c "</dev/tcp/$MGR/2377" 2>/dev/null; then reach=yes; break; fi
+  sleep 2
+done
+[ -n "$reach" ] || die "can't reach $MGR on port 2377 through NetBird after 1 minute: check 'netbird status' on both PCs,
+     that the main PC has created the swarm, and that the NetBird policy allows TCP 2377"
 ok "reachable, manager port 2377 open"
 
 say "2/3  Join the swarm as a manager, using this PC's NetBird address $IP"
