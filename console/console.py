@@ -233,13 +233,15 @@ def discover(force: bool = False) -> list[dict]:
         if not force and time.time() - DISCOVERY["t"] < 5:
             return DISCOVERY["managers"]
     nb = netbird()
-    ips = {p["ip"] for p in nb["peers"] if p["ip"] and str(p["status"]).lower() == "connected"}
+    # every peer, not only "Connected" ones: NetBird connects lazily and shows peers as "Idle" until traffic flows;
+    # asking is what wakes the connection up
+    ips = {p["ip"] for p in nb["peers"] if p["ip"]}
     if settings().get("main_ip"):
         ips.add(settings()["main_ip"])
     ips.discard(nb["ip"])
 
     def ask(ip):
-        code, j = http_json(f"http://{ip}:{PORT}/peer/info", timeout=2)
+        code, j = http_json(f"http://{ip}:{PORT}/peer/info", timeout=4)   # an idle peer needs a moment to connect
         return j | {"ip": ip} if code == 200 and j.get("manager") else None
 
     with ThreadPoolExecutor(max_workers=8) as ex:

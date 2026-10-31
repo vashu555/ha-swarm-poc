@@ -140,7 +140,7 @@ function viewChoose() {
 function peersCard() {
   const p = S.netbird.peers || [];
   return `<div class="card"><h2>NetBird peers (other PCs)</h2>${p.length ? `<table><tr><th>Name</th><th>NetBird IP</th><th>Status</th><th>Path</th><th>Latency</th></tr>
-    ${p.map(x => `<tr><td>${esc(x.name)}</td><td>${esc(x.ip)}</td><td><span class="dot ${/connected/i.test(x.status) ? "ok" : "bad"}"></span>${esc(x.status)}</td><td>${esc(x.type)}</td><td>${esc(x.latency)}</td></tr>`).join("")}</table>`
+    ${p.map(x => `<tr><td>${esc(x.name)}</td><td>${esc(x.ip)}</td><td><span class="dot ${/connected/i.test(x.status) ? "ok" : /idle/i.test(x.status) ? "warn" : "bad"}"></span>${esc(x.status)}${/idle/i.test(x.status) ? " (connects on first use)" : ""}</td><td>${esc(x.type)}</td><td>${esc(x.latency)}</td></tr>`).join("")}</table>`
     : `<p class="muted">No other PCs on the network yet.</p>`}</div>`;
 }
 
