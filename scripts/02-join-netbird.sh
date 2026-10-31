@@ -12,7 +12,8 @@ if [ -n "$(netbird_ip)" ]; then
   ok "already connected to NetBird as $(netbird_ip)"
 else
   say "Connecting to NetBird"
-  sudo netbird up --setup-key "$KEY" ${MGMT:+--management-url "$MGMT"}
+  # MTU 1200, not NetBird's default 1280: some internet paths carry less, and the swarm join then hangs
+  sudo netbird up --setup-key "$KEY" --mtu "${NB_MTU:-1200}" ${MGMT:+--management-url "$MGMT"}
   for _ in $(seq 1 30); do [ -n "$(netbird_ip)" ] && break; sleep 1; done
   [ -n "$(netbird_ip)" ] || die "no address on $WG_IF after 30 s: check 'netbird status -d'"
 fi

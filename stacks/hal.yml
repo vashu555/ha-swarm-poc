@@ -364,7 +364,7 @@ networks:
     name: ha-lab-backbone            # same name as the single-PC lab, so loadtest/ attaches unchanged
     driver: overlay
     attachable: true                 # lets 'docker run --network ha-lab-backbone' join (status.sh, Locust)
-    driver_opts: {com.docker.network.driver.mtu: "${OVERLAY_MTU:-1230}"}   # NetBird MTU − 50 (VXLAN)
+    driver_opts: {com.docker.network.driver.mtu: "${OVERLAY_MTU:-1150}"}   # NetBird MTU (1200) − 50 (VXLAN)
 
 configs:                             # files Swarm delivers to whichever PC runs the task (versioned by content hash)
   haproxy-edge:   {file: ../config/haproxy-edge.cfg,  name: "hal-haproxy-edge-${HAPROXY_VER:-0}"}

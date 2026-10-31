@@ -22,7 +22,7 @@ netbird_ip() { ip -4 -o addr show "$WG_IF" 2>/dev/null | awk '{print $4}' | cut 
 # Overlay networks wrap every packet in VXLAN (50 bytes), and VXLAN itself travels inside NetBird's WireGuard
 # tunnel. So the overlay MTU must be NetBird's MTU minus 50, or large packets are silently dropped.
 overlay_mtu() {
-  local m; m=$(cat "/sys/class/net/$WG_IF/mtu" 2>/dev/null || echo 1280)
+  local m; m=$(cat "/sys/class/net/$WG_IF/mtu" 2>/dev/null || echo 1200)
   echo $((m - 50))
 }
 

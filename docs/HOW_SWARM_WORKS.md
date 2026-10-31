@@ -89,9 +89,12 @@ The demo (`stacks/hello.yml`) is the opposite: stateless, so when a region is lo
 3. **Service discovery (DNS).** Inside the overlay, every service name resolves through Docker's DNS (127.0.0.11).
    That is why `pg-1`, `kafka-2`, `rabbit-3`… work unchanged from the single-PC lab.
 
-**MTU (the one trap).** Every layer adds headers: NetBird's tunnel carries at most 1280 bytes per packet, and VXLAN
-needs 50 of them. So the overlay must use **1230**. With the default 1500, small requests work but big ones (a long
-order list, a WebSocket batch) silently hang. `03-swarm-init.sh` and the stack set this; `05-check.sh` tests it.
+**MTU (the one trap).** Every layer adds headers, and the internet path between two PCs may carry less than you'd
+think. NetBird's default is 1280 bytes per packet, but between our first two PCs only ~1215 got through: small pings
+worked while the swarm join (a TLS handshake with full-size packets) silently timed out. So we set NetBird to **1200**
+(`--mtu 1200`, done by the console), and the overlay to 1200 − 50 (VXLAN) = **1150**. With too big an MTU, small
+requests work but big ones (a long order list, a WebSocket batch) silently hang. `03-swarm-init.sh` and the stack
+set this; `05-check.sh` tests it. Measure a path with `ping -M do -s <size> <peer>`.
 
 **Two ways a name resolves:**
 

@@ -299,9 +299,30 @@ def stream(cmd: list[str], env: dict | None = None) -> None:
 
 
 # ----------------------------------------------------------------------------- the jobs
+# NetBird's default MTU (1280) is too big for some internet paths: between two of our PCs only ~1215 bytes got
+# through, and the swarm join (a TLS handshake with full-size packets) timed out while small pings worked.
+NB_MTU = int(os.environ.get("NB_MTU", "1200"))
+
+
+def ensure_mtu() -> None:
+    nb = netbird()
+    if nb["mtu"] and nb["mtu"] <= NB_MTU:
+        return
+    log(f"NetBird MTU is {nb['mtu']}: setting {NB_MTU} so full-size packets fit every internet path")
+    sh(["netbird", "down"], 30)
+    rc, out = sh(["netbird", "up", "--mtu", str(NB_MTU)], 90)
+    log(out)
+    for _ in range(30):
+        if netbird()["ip"] and (netbird()["mtu"] or 0) <= NB_MTU:
+            log(f"NetBird MTU now {netbird()['mtu']}")
+            return
+        time.sleep(1)
+    raise RuntimeError("NetBird did not come back with the new MTU: check 'netbird status'")
+
+
 def job_netbird(key: str, mgmt: str) -> None:
-    cmd = ["netbird", "up", "--setup-key", key] + (["--management-url", mgmt] if mgmt else [])
-    log("$ netbird up --setup-key ****" + (f" --management-url {mgmt}" if mgmt else ""))
+    cmd = ["netbird", "up", "--setup-key", key, "--mtu", str(NB_MTU)] + (["--management-url", mgmt] if mgmt else [])
+    log(f"$ netbird up --setup-key **** --mtu {NB_MTU}" + (f" --management-url {mgmt}" if mgmt else ""))
     rc, out = sh(cmd, 90)
     log(out)
     for _ in range(30):
@@ -327,6 +348,7 @@ def job_become(region: str) -> None:
             return
         raise Reject(f"this PC is already in a swarm{' as ' + sw['region'] if sw['region'] else ''}: leave it first")
 
+    ensure_mtu()
     log("looking for an existing swarm on the NetBird network …")
     managers = discover(force=True)
     if region == MAIN_REGION:
