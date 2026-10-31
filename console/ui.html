@@ -120,7 +120,8 @@ function viewChoose() {
     const t = regs[r], R = REG[r], isMain = r === S.main_region;
     let status, can;
     if (t) { status = `<span class="dot ${t.state === "ready" ? "ok" : "bad"}"></span>Taken by <b>${esc(t.hostname)}</b> (${esc(t.state)})`; can = false; }
-    else if (reserved[r]) { status = `<span class="dot warn"></span>${esc(reserved[r])} is joining as ${r} now`; can = false; }
+    else if (reserved[r] && reserved[r] !== S.hostname) { status = `<span class="dot warn"></span>${esc(reserved[r])} is joining as ${r} now`; can = false; }
+    else if (reserved[r]) { status = `<span class="dot ok"></span>Free (your earlier attempt)`; can = true; }
     else if (isMain) { status = found ? `<span class="dot bad"></span>A swarm already exists` : `<span class="dot ok"></span>Free: this PC will <b>create</b> the swarm`; can = !found; }
     else { status = found ? `<span class="dot ok"></span>Free` : `<span class="dot warn"></span>Waiting for the main PC (Mumbai)`; can = found; }
     return `<div class="role ${can ? "free" : "taken"}" style="--c:${R.c}">

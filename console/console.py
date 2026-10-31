@@ -207,6 +207,8 @@ def peer_enroll(body: dict, client: str) -> dict:
         r = RESERVED.get(region)
         if r and r["until"] > time.time() and r["ip"] != client:
             raise Reject(f"{r['hostname']} is joining as {region} right now")
+        for k in [k for k, v in RESERVED.items() if v["ip"] == client]:   # one PC, one reservation: a new choice
+            RESERVED.pop(k)                                               # replaces its earlier one
         RESERVED[region] = {"ip": client, "hostname": str(body.get("hostname", client)), "until": time.time() + 180}
     rc, token = sh(["docker", "swarm", "join-token", "manager", "-q"])
     if rc != 0:
@@ -348,7 +350,11 @@ def job_become(region: str) -> None:
     code, j = http_json(f"http://{m['ip']}:{PORT}/peer/enroll", {"region": region, "hostname": HOST}, timeout=10)
     if code != 200:
         raise Reject(j.get("error", f"refused (HTTP {code})"))
-    stream(["bash", "scripts/04-swarm-join.sh", region, j["token"], j["manager"]])
+    try:
+        stream(["bash", "scripts/04-swarm-join.sh", region, j["token"], j["manager"]])
+    except Exception:
+        http_json(f"http://{m['ip']}:{PORT}/peer/enrolled", {"region": region}, timeout=5)   # give the region back
+        raise
 
     # double check: a manager now, we can see every node; if another PC got the same region, step back
     clash = [n for n in nodes() if n["region"] == region and n["id"] != swarm()["node_id"]]
