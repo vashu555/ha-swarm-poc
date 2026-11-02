@@ -33,7 +33,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent          # the repository
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from live_map import snapshot as topology_snapshot
+from live_map import snapshot as topology_snapshot, engine_get
+from read_cache import ReadCache
 UI = Path(__file__).resolve().parent / "ui.html"
 PORT = int(os.environ.get("CONSOLE_PORT", "9790"))
 WG_IF = os.environ.get("WG_IF", "wt0")
@@ -45,6 +46,7 @@ STACKS = ("hal", "infra", "hello")
 ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 HOST = socket.gethostname()
 SETTINGS_LOCK = threading.RLock()
+UI_READS = ReadCache()
 
 
 class Reject(Exception):
@@ -134,24 +136,28 @@ def netbird() -> dict:
 
 
 def docker_info() -> dict:
-    rc, out = sh(["docker", "info", "--format", "{{json .}}"], 10)
-    if rc != 0:
-        return {"ok": False, "error": out[-300:]}
     try:
-        j = json.loads(out)
-    except ValueError:
-        return {"ok": False, "error": "unreadable docker info"}
+        j = engine_get('/info')
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[-300:]}
     return {"ok": True, "version": j.get("ServerVersion"), "desktop": "docker desktop" in str(j.get("OperatingSystem", "")).lower(),
             "cpus": j.get("NCPU"), "mem": j.get("MemTotal"), "swarm": j.get("Swarm") or {}}
 
 
 def nodes(strict: bool = False) -> list[dict]:
     """Every node of the swarm (managers only can ask)."""
-    rc, out = sh("docker node inspect $(docker node ls -q) --format '{{json .}}'", 10)
-    if rc and strict:
-        raise RuntimeError(out[-600:])
+    try:
+        records = engine_get('/nodes')
+    except Exception as exc:
+        if strict:
+            raise RuntimeError(str(exc)[-600:]) from exc
+        return []
+    return node_rows(records)
+
+
+def node_rows(records) -> list[dict]:
     res = []
-    for n in json_lines(out) if rc == 0 else []:
+    for n in records:
         ms = n.get("ManagerStatus") or {}
         labels = (n.get("Spec") or {}).get("Labels") or {}
         res.append({"id": n["ID"], "hostname": n["Description"]["Hostname"], "addr": n["Status"].get("Addr", ""),
@@ -298,6 +304,7 @@ def run_job(name: str, fn, *args) -> None:
         if JOB["running"]:
             raise Reject(f"busy: '{JOB['name']}' is still running")
         JOB.update(name=name, running=True, ok=None, reject=None, log=[], started=time.time())
+        UI_READS.clear()
 
     def go():
         try:
@@ -312,6 +319,7 @@ def run_job(name: str, fn, *args) -> None:
             log(f"✖ FAILED: {e}")
         finally:
             JOB["running"] = False
+            UI_READS.clear()
             with DISC_LOCK:
                 DISCOVERY["t"] = 0
     threading.Thread(target=go, daemon=True).start()
@@ -615,7 +623,7 @@ def lab_is_pilot(sw: dict | None = None) -> bool:
 
 def view_lab() -> dict:
     base = lab_base()
-    code, st = http_json(f"{base}/api/state", timeout=4)
+    code, st = control_read(base)
     if code != 200:
         return {"ok": False, "error": st.get("error") or f"the lab's control service is not answering at {base}"}
     status = st.get("status") or {}
@@ -651,7 +659,9 @@ def view_lab() -> dict:
         path.append({"what": what, "who": who, "zone": zone_of(who) if who else ""})
     kafka = [{"broker": n, "zone": zone_of(n), "partitions": int(m.group(1))}
              for n, v in sorted(roles.items()) if n.startswith("kafka-") and (m := re.match(r"LEADS (\d+)", str(v)))]
-    return {"ok": True, "url": base, "ready": st.get("ready"), "boot": st.get("boot"), "zones": zones,
+    observed = status.get('observed_at')
+    stale = not isinstance(observed, (int, float)) or not -5 <= time.time() - observed <= 20
+    return {"ok": True, "stale": stale, "error": "Service probes are delayed" if stale else "", "url": base, "ready": st.get("ready"), "boot": st.get("boot"), "zones": zones,
             "zones_down": sorted(SITE_REGION.get(s, s) for s in st.get("zones_down") or []), "path": path, "kafka": kafka,
             "api_rps": {k: round(v, 1) for k, v in api_rps.items()}, "audit": st.get("audit") or {},
             "events": (st.get("events") or [])[:16], "pilot": lab_is_pilot()}
@@ -695,31 +705,34 @@ def label_map(s: str) -> dict:
     return dict(kv.split("=", 1) for kv in s.split(",") if "=" in kv)
 
 
+def control_read(base=None):
+    """Share the existing read-only probe snapshot between dashboard sections."""
+    base = base or lab_base()
+    return UI_READS.get(('control', base), lambda: http_json(f'{base}/api/state', timeout=4), .7)
+
+
 def patroni() -> list[dict]:
-    """Database roles, asked from any PostgreSQL container running on this PC."""
-    rc, out = sh(["docker", "ps", "-q", "--filter", "label=com.docker.swarm.service.name"], 5)
-    for cid in out.split() if rc == 0 else []:
-        rc2, name = sh(["docker", "inspect", "-f", '{{index .Config.Labels "com.docker.swarm.service.name"}}', cid], 5)
-        if rc2 == 0 and re.fullmatch(r"hal_pg-\d", name.strip()):
-            rc3, j = sh(["docker", "exec", cid, "curl", "-s", "-m", "2", "http://127.0.0.1:8008/cluster"], 6)
-            try:
-                return [{"name": m["name"], "role": m["role"], "state": m["state"], "lag": m.get("lag", 0)}
-                        for m in json.loads(j)["members"]] if rc3 == 0 else []
-            except (ValueError, KeyError):
-                return []
-    return []
+    code, value = control_read()
+    status = value.get('status') or {}
+    observed = status.get('observed_at')
+    if code != 200 or not isinstance(observed, (int, float)) or not -5 <= time.time() - observed <= 20:
+        return []
+    return [{key: member.get(key, 0 if key == 'lag' else '') for key in ('name', 'role', 'state', 'lag')}
+            for member in (status.get('patroni') or {}).get('members', [])]
 
 
 def view_zone() -> dict:
     STATS["wanted"] = time.time()
     sw = swarm()
     nb = netbird()
-    rc, out = sh(["docker", "ps", "-a", "--filter", "label=com.docker.stack.namespace", "--format", "{{json .}}"], 10)
     services = []
-    for c in json_lines(out) if rc == 0 else []:
-        lab = label_map(c.get("Labels", ""))
-        svc = lab.get("com.docker.swarm.service.name", c["Names"])
-        st = STATS["by_name"].get(c["Names"], {})
+    for c in engine_get('/containers/json?all=1'):
+        lab = c.get('Labels') or {}
+        if lab.get('com.docker.stack.namespace') not in STACKS:
+            continue
+        name = (c.get('Names') or [''])[0].lstrip('/')
+        svc = lab.get("com.docker.swarm.service.name", name)
+        st = STATS["by_name"].get(name, {})
         services.append({"service": svc, "stack": lab.get("com.docker.stack.namespace", ""), "state": c.get("State", ""),
                          "status": c.get("Status", ""), "cpu": st.get("CPUPerc", ""), "mem": st.get("MemUsage", "").split(" / ")[0]})
     # one row per service: the running container if there is one, else the newest
@@ -754,28 +767,41 @@ def view_combined() -> dict:
     sw = swarm()
     if not sw["manager"]:
         raise Reject("only a manager can see the whole swarm")
-    tasks = []
-    for st in STACKS:
-        rc, out = sh(["docker", "stack", "ps", st, "--filter", "desired-state=running", "--format", "{{json .}}"], 15)
-        for t in json_lines(out) if rc == 0 else []:
-            tasks.append({"service": re.sub(r"\.\d+$", "", t["Name"]), "node": t["Node"], "state": t["CurrentState"],
-                          "error": t.get("Error", "")})
-    service_regions = {}
-    rc, out = sh("ids=$(docker service ls -q --filter label=com.docker.stack.namespace=hal) && if [ -n \"$ids\" ]; then docker service inspect $ids --format '{{json .}}'; fi", 10)
-    for svc in json_lines(out) if rc == 0 else []:
-        spec = svc.get("Spec") or {}
-        constraints = ((spec.get("TaskTemplate") or {}).get("Placement") or {}).get("Constraints") or []
+    services = engine_get('/services')
+    names, service_regions, pilot = {}, {}, False
+    for service in services:
+        spec = service.get('Spec') or {}
+        labels = spec.get('Labels') or {}
+        if labels.get('com.docker.stack.namespace') not in STACKS:
+            continue
+        name = spec['Name']
+        names[service['ID']] = name
+        constraints = ((spec.get('TaskTemplate') or {}).get('Placement') or {}).get('Constraints') or []
+        region = labels.get('lab.region', '')
         for constraint in constraints:
-            m = re.fullmatch(r"node\.labels\.region\s*==\s*(mumbai|hyderabad|delhi)", constraint)
-            if m:
-                service_regions[spec["Name"]] = m.group(1)
-    region_of = {n["hostname"]: n["region"] for n in sw["nodes"]}
-    for t in tasks:
-        t["region"] = service_regions.get(t["service"], region_of.get(t["node"], ""))
-    return {"nodes": sw["nodes"], "leader": sw["leader"], "regions": regions_from(sw["nodes"]), "tasks": tasks,
-            "patroni": patroni(), "is_main": sw["is_main"],
-            "actions": {k: v[0] for k, v in ACTIONS.items()}, "lab_deployed": bool(service_regions),
-            "pilot": bool(service_regions) and lab_is_pilot(sw)}
+            match = re.fullmatch(r'node\.labels\.region\s*==\s*(mumbai|hyderabad|delhi)', constraint)
+            if match:
+                region = region or match.group(1)
+                if name == 'hal_api-3' and match.group(1) == MAIN_REGION:
+                    pilot = True
+        if name.startswith('hal_') and region:
+            service_regions[name] = region
+    hosts = {n['id']: n for n in sw['nodes']}
+    tasks = []
+    for task in engine_get('/tasks', {'desired-state': ['running']}):
+        name = names.get(task.get('ServiceID'))
+        if not name:
+            continue
+        node = hosts.get(task.get('NodeID'), {})
+        status = task.get('Status') or {}
+        tasks.append({'service': name, 'node': node.get('hostname', ''),
+                      'state': status.get('State', 'unknown').capitalize(),
+                      'error': status.get('Err', ''),
+                      'region': service_regions.get(name, node.get('region', ''))})
+    return {'nodes': sw['nodes'], 'leader': sw['leader'], 'regions': regions_from(sw['nodes']),
+            'tasks': tasks, 'patroni': patroni(), 'is_main': sw['is_main'],
+            'actions': {k: v[0] for k, v in ACTIONS.items()},
+            'lab_deployed': any(name.startswith('hal_') for name in names.values()), 'pilot': pilot}
 
 
 def view_state() -> dict:
@@ -849,19 +875,20 @@ class Handler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/api/health":
                 return self.send(200, {"ok": True})
             if method == "GET" and path == "/api/state":
-                return self.send(200, view_state())
+                return self.send(200, UI_READS.get(path, view_state, .7))
             if method == "GET" and path == "/api/zone":
-                return self.send(200, view_zone())
+                return self.send(200, UI_READS.get(path, view_zone, .7))
             if method == "GET" and path == "/api/combined":
-                return self.send(200, view_combined())
+                return self.send(200, UI_READS.get(path, view_combined, .7))
             if method == "GET" and path == "/api/topology":
                 def control_snapshot():
-                    code, value = http_json(f"{lab_base()}/api/state", timeout=4)
+                    code, value = control_read()
                     return value if code == 200 else None
-                return self.send(200, topology_snapshot(control_snapshot))
+                return self.send(200, UI_READS.get(path, lambda: topology_snapshot(control_snapshot), .7))
             if method == "GET" and path == "/api/lab":
-                return self.send(200, view_lab())
+                return self.send(200, UI_READS.get(path, view_lab, .7))
             if method == "POST":
+                UI_READS.clear()
                 b = self.body()
                 if path == "/api/netbird":
                     if not str(b.get("setup_key", "")).strip():
@@ -898,6 +925,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(404, {"error": "not found"})
         except Reject as e:
             return self.send(409, {"error": str(e)})
+        except (BrokenPipeError, ConnectionResetError):
+            return  # browser navigated away while a status read was finishing
         except Exception as e:  # noqa: BLE001
             return self.send(500, {"error": str(e)})
 
@@ -905,7 +934,10 @@ class Handler(BaseHTTPRequestHandler):
         self.route("GET")
 
     def do_POST(self):
-        self.route("POST")
+        try:
+            self.route("POST")
+        finally:
+            UI_READS.clear()
 
 
 def main() -> None:

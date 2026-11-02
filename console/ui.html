@@ -86,20 +86,22 @@ const REG = {
   delhi:     {c: "var(--delhi)",     title: "Delhi",     what: "Third region: the tie-breaking vote. Third copy of every database and broker. Was oracle."},
 };
 const KINDS = ["etcd","pg","pgbouncer","kafka","rabbit","redis","sentinel","haproxy","api","relay","router","feed","bridge","worker","exchange","control","registry","web"];
-let S = null, Z = null, C = null, L = null, M = null, pollBusy = false, lastErr = "";
+let S = null, Z = null, C = null, L = null, M = null, pollBusy = false, refreshQueued = false, lastErr = "";
 const $ = s => document.querySelector(s);
+const pendingReads = new Set();
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const view = () => (location.hash.replace("#/", "") || "auto");
 const dotFor = st => /^running|^ready|^Running|healthy|leader|streaming/i.test(st) ? "ok" : /pending|preparing|starting|assigned|accepted|created|restarting/i.test(st) ? "warn" : "bad";
 
 async function api(path, body) {
-  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20000);
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), body === undefined ? 8000 : 20000);
+  if (body === undefined) pendingReads.add(controller);
   try {
     const r = await fetch(path, {...(body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}), signal: controller.signal});
     const j = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
     return j;
-  } finally { clearTimeout(timer); }
+  } finally { clearTimeout(timer); pendingReads.delete(controller); }
 }
 function topologyMap(map) {
   if (!map) return `<div class="card">Loading the combined PC map…</div>`;
@@ -126,7 +128,7 @@ function topologyMap(map) {
   }).join('');
   const rate = (a,b) => stale || !map.probe_fresh ? 'Unavailable' : `${Number((map.edges || []).find(e => [e.from,e.to].includes(a) && [e.from,e.to].includes(b))?.rate || 0).toFixed(1)}/s activity`;
   return `<div class="card" id="topology-map" data-stale="${stale ? '1' : '0'}"><div class="hero"><h2 style="margin:0">Combined live PC and component map</h2>
-    <span class="badge">${map.pilot ? 'Pilot · workloads share Mumbai' : 'Distributed placement'}</span><span class="map-age muted"></span></div>
+    <span class="badge">${map.pilot ? 'Pilot · workloads share Mumbai' : 'Distributed placement'}</span><span class="map-age muted">${map.fetched_at ? `Snapshot ${Math.max(0, Math.floor(Date.now()/1000-map.fetched_at))}s ago` : 'Snapshot unavailable'}</span></div>
     <p class="muted">${stale ? 'Snapshot stale: connectivity and component state are unknown. Last known data remains visible.' : map.pilot ? 'Pilot is still running. Hyderabad and Delhi must join before their existing data can be transferred to those PCs.' : map.three_pc_ready ? 'All three region managers are connected.' : 'Waiting for all three region managers to connect.'}</p>
     ${map.error ? `<div class="msg bad">${esc(map.error)}</div>` : ''}
     ${!map.probe_fresh ? '<p class="muted">Service probes are unavailable or stale; running containers are not being reported as healthy.</p>' : ''}
@@ -139,7 +141,7 @@ function topologyMap(map) {
 async function act(path, body) {
   lastErr = "";
   try { await api(path, body); } catch (e) { lastErr = e.message; }
-  await tick();
+  await tick(true);
 }
 
 function jobBox() {
@@ -217,6 +219,7 @@ const zoneBadge = z => z ? `<span class="badge r" style="background:${(REG[z] ||
 
 function zoneLabCard(region) {
   if (!L) return `<div class="card">Loading the trading lab…</div>`;
+  if (L.stale) return `<div class="card"><div class="msg bad">Lab status delayed: ${esc(L.error)}. Retrying automatically.</div></div>`;
   if (!L.ok) return `<div class="card"><h2>Trading lab</h2><p class="muted">${esc(L.error)}. Deploy the lab (or the 3-zone pilot) from <b>All zones</b> on the main PC.</p></div>`;
   const comps = L.zones[region] || [], R = REG[region];
   const running = comps.filter(c => c.state === "running").length, down = L.zones_down.includes(region);
@@ -238,6 +241,7 @@ function zoneLabCard(region) {
 
 function dataPathCard(highlight) {
   if (!L || !L.ok) return "";
+  if (L.stale) return `<div class="card"><div class="msg bad">Live data path unavailable while lab status refreshes.</div></div>`;
   const rows = L.path.map(p => `<tr ${highlight && p.zone === highlight ? `style="background:color-mix(in srgb,var(--accent) 10%,transparent)"` : ""}>
       <td>${esc(p.what)}</td><td><b>${esc(p.who || "—")}</b></td><td>${zoneBadge(p.zone)}</td></tr>`).join("");
   const kafka = L.kafka.map(k => `<span class="cell">${zoneBadge(k.zone)}&nbsp;${esc(k.broker)}:&nbsp;<b>${k.partitions}</b>&nbsp;partitions</span>`).join("")
@@ -258,6 +262,7 @@ function dataPathCard(highlight) {
 
 // ------------------------------------------------------------------ my zone
 function viewZone(region) {
+  if (Z?.stale) return `<div class="card"><div class="msg bad">Zone status delayed: ${esc(Z.error)}. Retrying automatically.</div></div>${zoneLabCard(region)}`;
   if (!Z) return `<div class="card">Loading this zone…</div>`;
   if (region && region !== Z.region) {          // pilot: another zone that also runs on this PC
     return `<div class="card"><p class="muted" style="margin:0">Pilot: the ${REG[region].title} zone runs on this PC too (on three real PCs it would be
@@ -269,7 +274,7 @@ function viewZone(region) {
   const rows = Z.services.map(s => `<tr><td><span class="dot ${dotFor(s.state)}"></span>${esc(s.service.replace(/^hal_/, ""))}</td>
      <td class="muted">${esc(s.stack)}</td><td>${esc(s.status)}</td><td>${esc(s.cpu)}</td><td>${esc(s.mem)}</td></tr>`).join("");
   const pg = Z.patroni.length ? `<table><tr><th>Database</th><th>Role</th><th>State</th><th>Lag</th></tr>${Z.patroni.map(m =>
-     `<tr><td>${esc(m.name)}</td><td><b>${esc(m.role)}</b></td><td><span class="dot ${dotFor(m.state)}"></span>${esc(m.state)}</td><td>${esc(m.lag)}</td></tr>`).join("")}</table>` : `<p class="muted">No database running on this PC yet.</p>`;
+     `<tr><td>${esc(m.name)}</td><td><b>${esc(m.role)}</b></td><td><span class="dot ${dotFor(m.state)}"></span>${esc(m.state)}</td><td>${esc(m.lag)}</td></tr>`).join("")}</table>` : `<p class="muted">Database role status unavailable.</p>`;
   return `<div class="card" style="--c:${R.c}"><div class="hero"><span class="big">You are ${esc(R.title)}</span>
       ${Z.is_main ? `<span class="badge r" style="background:var(--mumbai)">MAIN PC</span>` : ""}
       <span class="badge">${me.leader ? "★ Swarm LEADER" : "Swarm manager · " + esc(me.reachability || "")}</span>
@@ -296,6 +301,7 @@ function viewZone(region) {
 
 // ------------------------------------------------------------------ combined (main PC)
 function viewCombined() {
+  if (C?.stale) return `<div class="card"><div class="msg bad">Swarm status delayed: ${esc(C.error)}. Retrying automatically.</div></div>${topologyMap(M)}${dataPathCard(null)}`;
   if (!C) return `<div class="card">Loading the whole swarm…</div>`;
   const nodes = C.nodes.map(n => `<tr><td><span class="badge r" style="background:${(REG[n.region] || {}).c || "var(--muted)"}">${esc(n.region || "no region")}</span></td>
     <td>${esc(n.hostname)}${n.main ? " · <b>main</b>" : ""}</td><td>${esc(n.addr)}</td><td><span class="dot ${dotFor(n.state)}"></span>${esc(n.state)}</td>
@@ -309,10 +315,10 @@ function viewCombined() {
   const kinds = [...KINDS.filter(k => byKind[k]), ...Object.keys(byKind).filter(k => !KINDS.includes(k))];
   const matrix = kinds.map(k => `<tr><td><b>${esc(k)}</b></td>${S.regions.map(r => `<td>${(byKind[k][r] || []).map(t =>
       `<span class="cell" title="${esc(t.state + (t.error ? " · " + t.error : ""))}"><span class="dot ${dotFor(t.state)}"></span>${esc(t.short)}</span>`).join("") || `<span class="muted">·</span>`}</td>`).join("")}</tr>`).join("");
-  const pg = C.patroni.length ? C.patroni.map(m => `<span class="cell"><span class="dot ${dotFor(m.state)}"></span><b>${esc(m.name)}</b>&nbsp;${esc(m.role)}</span>`).join("") : `<span class="muted">no database running yet</span>`;
+  const pg = C.patroni.length ? C.patroni.map(m => `<span class="cell"><span class="dot ${dotFor(m.state)}"></span><b>${esc(m.name)}</b>&nbsp;${esc(m.role)}</span>`).join("") : `<span class="muted">database role status unavailable</span>`;
   const acts = Object.entries(C.actions).map(([k, v]) => `<button class="${/rm$/.test(k) ? "sec" : ""}" ${S.job.running ? "disabled" : ""} onclick="if(confirm('${esc(v)}?'))act('/api/action',{name:'${k}'})">${esc(v)}</button>`).join(" ");
   const allReady = S.regions.every(r => C.nodes.filter(n => n.region === r && n.state === "ready" && n.availability === "active").length === 1);
-  const pilotCards = C.pilot && L && L.ok ? S.regions.map(r => {
+  const pilotCards = C.pilot && L && L.ok && !L.stale ? S.regions.map(r => {
     const comps = L.zones[r] || [], R = REG[r], running = comps.filter(c => c.state === "running").length, down = L.zones_down.includes(r);
     const leads = comps.filter(c => /LEADER|MASTER|ACTIVE/.test(c.role)).map(c => `${esc(c.name)} ${esc(c.role.toLowerCase())}`).join(", ");
     return `<div class="card" style="border-top:4px solid ${R.c}"><h2><a href="#/zone/${r}" style="color:${R.c}">${esc(R.title)} ↗</a></h2>
@@ -321,7 +327,7 @@ function viewCombined() {
       <button class="danger" ${S.job.running || down ? "disabled" : ""} onclick="if(confirm('Disable the whole ${R.title} zone?'))act('/api/zone-drill',{region:'${r}',action:'down'})">Disable zone</button>
       <button ${S.job.running || (!down && running === comps.length) ? "disabled" : ""} onclick="act('/api/zone-drill',{region:'${r}',action:'up'})">Enable zone</button></div>`;
   }).join("") : "";
-  const zoneCards = pilotCards || S.regions.map(r => {
+  const zoneCards = (C.pilot && (!L?.ok || L.stale) ? `<div class="card">Zone status is unavailable. Controls will return when live status recovers.</div>` : pilotCards) || S.regions.map(r => {
     const n = C.nodes.find(n => n.region === r), R = REG[r];
     const tasks = C.tasks.filter(t => t.region === r && t.service.startsWith('hal_'));
     const running = tasks.filter(t => /^Running\b/i.test(t.state)).length;
@@ -349,45 +355,87 @@ function viewCombined() {
 }
 
 // ------------------------------------------------------------------ loop
-async function refreshView() {
-  try { S = await api("/api/state"); } catch (e) { if (M) M = {...M, stale:true, error:e.message}; $("#app").innerHTML = `<div class="card"><div class="msg bad">Console not answering: ${esc(e.message)}</div></div>` + (S && view().startsWith('combined') ? topologyMap(M) : ''); return; }
-  const sw = S.swarm, joined = sw.state === "active" && sw.region;
-  $("#host").textContent = S.hostname + (S.netbird.ip ? " · " + S.netbird.ip : "");
-  $("#rolebadge").innerHTML = joined ? `<span class="badge r" style="background:${REG[sw.region].c}">${REG[sw.region].title}${sw.is_main ? " · main" : ""}</span>` : "";
-  let [v, zr] = view().split("/");
-  if (!joined) v = "setup"; else if (v === "auto" || v === "setup") v = "zone";
-  if (v === "combined" && !sw.is_main) v = "zone";
-  const pilot = sw.is_main && !!(L && L.pilot);           // all three zones on this PC: one page per zone
-  const zoneRegion = pilot && S.regions.includes(zr) ? zr : sw.region;
-  $("#tabs").innerHTML = !joined ? "" : (pilot
-    ? S.regions.map(r => `<a href="#/zone/${r}" class="${v === "zone" && zoneRegion === r ? "on" : ""}">${REG[r].title}</a>`).join("")
-    : `<a href="#/zone" class="${v === "zone" ? "on" : ""}">My zone</a>`)
-    + (joined && sw.is_main ? `<a href="#/combined" class="${v === "combined" ? "on" : ""}">All zones</a>` : "");
-  try {
-    if (!S.swarm.membership_error && v === "zone") Z = await api("/api/zone");
-    if (!S.swarm.membership_error && v === "combined") C = await api("/api/combined");
-    if (!S.swarm.membership_error && v === "combined") M = await api('/api/topology').catch(e => ({...(M || {}),ok:false,stale:true,error:e.message}));
-    if (!S.swarm.membership_error && (v === "zone" || v === "combined")) L = await api("/api/lab").catch(() => null);
-  } catch (e) { lastErr = e.message; }
-  if (S.swarm.membership_error && M) M = {...M,stale:true,error:S.swarm.membership_error};
-  const html = S.swarm.membership_error ? recoveryCard() + (v === 'combined' ? topologyMap(M) : '') : v === "setup" ? (!S.netbird.connected ? viewNetbird() : viewChoose()) : v === "zone" ? viewZone(zoneRegion) : viewCombined();
-  // the lab's own live flow map (moving dots between services, all three zones), only in All zones on the main PC
-  const fm = $("#flowmap"), wantMap = v === "combined" && L && L.ok && L.url.includes("127.0.0.1");
-  if (wantMap && !fm.firstChild) fm.innerHTML = `<div class="card"><h2>Live flow map: every service in all three zones</h2>
-      <p class="muted">The lab dashboard itself. Moving dots are real traffic between services; boxes turn red when a component or zone stops,
-      and the dots re-route to the surviving zones. <a href="http://127.0.0.1:9700" target="_blank">Open it full screen ↗</a></p>
-      <iframe src="http://127.0.0.1:9700" style="width:100%;height:1100px;border:1px solid var(--line);border-radius:10px;background:#fff"></iframe></div>`;
-  if (!wantMap && fm.firstChild) fm.innerHTML = "";
-  const focus = document.activeElement && document.activeElement.id, val = focus && document.activeElement.value;
-  const log = $("#joblog"), atEnd = !log || log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
-  if (!(focus && ["key", "mgmt", "mainip"].includes(focus))) $("#app").innerHTML = html;   // don't wipe what is being typed
-  const nl = $("#joblog"); if (nl && atEnd) nl.scrollTop = nl.scrollHeight;
-  document.title = (joined ? (v === "combined" ? "All zones" : REG[zoneRegion].title + " zone") : "Choose a role") + " · HA Swarm";
+// Keep existing buttons, focus and expanded panels while updating live values.
+function renderContent(parent, html) {
+  const template = document.createElement('template'); template.innerHTML = html;
+  function sync(old, fresh) {
+    if (old.nodeType !== fresh.nodeType || old.nodeName !== fresh.nodeName ||
+        (old.nodeType === 1 && old.id !== fresh.id)) { old.replaceWith(fresh.cloneNode(true)); return; }
+    if (old.nodeType === 3) { if (old.data !== fresh.data) old.data = fresh.data; return; }
+    if (old.nodeType !== 1) return;
+    const focused = old === document.activeElement;
+    for (const attr of [...old.attributes]) {
+      if (old.tagName === 'DETAILS' && attr.name === 'open') continue;
+      if (!fresh.hasAttribute(attr.name) && !(focused && ['value','checked'].includes(attr.name))) old.removeAttribute(attr.name);
+    }
+    for (const attr of fresh.attributes) {
+      if (!(focused && ['value','checked'].includes(attr.name)) && old.getAttribute(attr.name) !== attr.value) old.setAttribute(attr.name, attr.value);
+    }
+    if (old.tagName === 'INPUT' && !focused) { old.value = fresh.value; old.checked = fresh.checked; }
+    children(old, fresh);
+  }
+  function children(old, fresh) {
+    const wanted = [...fresh.childNodes];
+    wanted.forEach((child, i) => old.childNodes[i] ? sync(old.childNodes[i], child) : old.appendChild(child.cloneNode(true)));
+    while (old.childNodes.length > wanted.length) old.lastChild.remove();
+  }
+  children(parent, template.content);
 }
-async function tick() {
-  if (pollBusy) return;
+async function refreshView() {
+  const route = location.hash;
+  try { S = await api('/api/state'); }
+  catch (e) {
+    if (route !== location.hash) { refreshQueued = true; return; }
+    if (M) M = {...M, stale:true, error:e.message};
+    renderContent($('#app'), `<div class="card"><div class="msg bad">Console not answering: ${esc(e.message)}. Retrying automatically.</div></div>` + (S && view().startsWith('combined') ? topologyMap(M) : ''));
+    return;
+  }
+  if (route !== location.hash) { refreshQueued = true; return; }
+  const sw = S.swarm, joined = sw.state === 'active' && sw.region;
+  $('#host').textContent = S.hostname + (S.netbird.ip ? ' · ' + S.netbird.ip : '');
+  $('#rolebadge').innerHTML = joined ? `<span class="badge r" style="background:${REG[sw.region].c}">${REG[sw.region].title}${sw.is_main ? ' · main' : ''}</span>` : '';
+  let [v, zr] = view().split('/');
+  if (!joined) v = 'setup'; else if (v === 'auto' || v === 'setup') v = 'zone';
+  if (v === 'combined' && !sw.is_main) v = 'zone';
+  // Independent reads run together. A failed section cannot discard the others.
+  const read = (path, previous) => api(path).catch(e => ({...(previous || {}), stale:true, error:e.message}));
+  if (!sw.membership_error && (v === 'zone' || v === 'combined')) {
+    const results = await Promise.all([
+      read(v === 'zone' ? '/api/zone' : '/api/combined', v === 'zone' ? Z : C),
+      v === 'combined' ? read('/api/topology', M) : Promise.resolve(M),
+      read('/api/lab', L)
+    ]);
+    if (route !== location.hash) { refreshQueued = true; return; }
+    if (v === 'zone') Z = results[0]; else C = results[0];
+    M = results[1]; L = results[2];
+  }
+  const pilot = sw.is_main && !!(L && L.pilot);
+  const zoneRegion = pilot && S.regions.includes(zr) ? zr : sw.region;
+  renderContent($('#tabs'), !joined ? '' : (pilot
+    ? S.regions.map(r => `<a href="#/zone/${r}" class="${v === 'zone' && zoneRegion === r ? 'on' : ''}">${REG[r].title}</a>`).join('')
+    : `<a href="#/zone" class="${v === 'zone' ? 'on' : ''}">My zone</a>`)
+    + (joined && sw.is_main ? `<a href="#/combined" class="${v === 'combined' ? 'on' : ''}">All zones</a>` : ''));
+  if (sw.membership_error && M) M = {...M,stale:true,error:sw.membership_error};
+  const html = sw.membership_error ? recoveryCard() + (v === 'combined' ? topologyMap(M) : '') : v === 'setup' ? (!S.netbird.connected ? viewNetbird() : viewChoose()) : v === 'zone' ? viewZone(zoneRegion) : viewCombined();
+  const fm = $('#flowmap');
+  const wantMap = v === 'combined' && !sw.membership_error && (fm.firstChild || (L?.ok && L.url.includes('127.0.0.1')));
+  if (wantMap && !fm.firstChild) fm.innerHTML = `<div class="card"><h2>Live flow map: every service in all three zones</h2>
+    <p class="muted">Live lab dashboard. <a href="http://127.0.0.1:9700" target="_blank">Open full screen ↗</a></p>
+    <iframe loading="lazy" title="Live lab flow map" src="http://127.0.0.1:9700" style="width:100%;height:1100px;border:1px solid var(--line);border-radius:10px;background:#fff"></iframe></div>`;
+  if (!wantMap && fm.firstChild) fm.replaceChildren();
+  const focus = document.activeElement?.id;
+  const log = $('#joblog'), atEnd = !log || log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+  if (!['key','mgmt','mainip'].includes(focus)) renderContent($('#app'), html);
+  const nl = $('#joblog'); if (nl && atEnd) nl.scrollTop = nl.scrollHeight;
+  document.title = (joined ? (v === 'combined' ? 'All zones' : REG[zoneRegion].title + ' zone') : 'Choose a role') + ' · HA Swarm';
+}
+async function tick(force = false) {
+  if (document.hidden && !force) return;
+  if (pollBusy) { if (force) refreshQueued = true; return; }
   pollBusy = true;
-  try { await refreshView(); } finally { pollBusy = false; }
+  try { await refreshView(); }
+  catch (e) { lastErr = e.message; renderContent($('#app'), `<div class="card"><div class="msg bad">Status refresh failed: ${esc(e.message)}. Retrying automatically.</div></div>`); }
+  finally { pollBusy = false; if (refreshQueued) { refreshQueued = false; tick(true); } }
 }
 setInterval(() => {
   const map = $('#topology-map');
@@ -397,8 +445,9 @@ setInterval(() => {
   const label = $('#topology-map .map-age');
   if (label) label.textContent = `Snapshot ${age}s ago · probe snapshot ${M.probe_observed_at ? new Date(M.probe_observed_at*1000).toLocaleTimeString() : 'unavailable'}`;
 }, 1000);
-window.addEventListener("hashchange", tick);
-tick(); setInterval(tick, 2500);
+window.addEventListener('hashchange', () => { for (const controller of pendingReads) controller.abort(); tick(true); });
+document.addEventListener('visibilitychange', () => { if (!document.hidden) tick(true); });
+tick(); setInterval(() => tick(), 2500);
 </script>
 </body>
 </html>
