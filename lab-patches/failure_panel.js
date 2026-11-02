@@ -3,7 +3,7 @@ function failurePanel(rows) {
   const now = Date.now()/1000;
   return `<section class="card"><h2>Abrupt failure and recovery timing</h2>
     <p>Crash kills the real process without a shutdown grace period. Injected failures stay down until Restore.
-    PostgreSQL uses a 20 s leader lease; other components have their own detection timeouts. Peer readiness and successful transactions are separate measurements.</p>
+    PostgreSQL crash recovery waits for its leader lease (20 s configured; supported minimum), then promotion and reconnection. This is separate from successful order acknowledgement. New requests retry at the client; Kafka receives committed outbox messages afterward.</p>
     <table><thead><tr><th>Failed component</th><th>Crash request → confirmed / held</th><th>Recovery observed after crash</th><th>Replacement / status</th></tr></thead>
     <tbody>${rows.map(r=>`<tr><td><b>${esc(r.target)}</b><br>${fmtT(r.requested_at)}</td>
       <td>${r.signal_ms==null?'Not confirmed':Number(r.signal_ms).toFixed(0)+' ms'}</td>
