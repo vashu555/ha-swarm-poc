@@ -16,10 +16,12 @@ if [ -n "$PILOT" ]; then
   export HYDERABAD_ON="$FIRST_REGION" DELHI_ON="$FIRST_REGION" HAPROXY2_HTTPS=8444 HAPROXY2_STATS=8405
   ok "pilot: all three zones on this PC ($(hostname))"
 else
-  for r in $REGIONS; do
-    [ "$(docker node ls -q --filter node.label=region="$r" | wc -l)" = 1 ] || die "region $r is not on exactly one PC: run scripts/05-check.sh (or try: $0 --pilot)"
-  done
-  ok "3 regions labelled"
+  python3 "$POC_DIR/scripts/three-pc-preflight.py" || die "three reachable, ready, active region managers are required"
+  if docker service inspect "${STACK}_api-3" -f '{{json .Spec.TaskTemplate.Placement.Constraints}}' 2>/dev/null | grep -Eq '==[[:space:]]*mumbai'; then
+    [ "${PILOT_DATA_MIGRATION_CONFIRMED:-}" = yes ] || die "the pilot's stateful volumes are still on Mumbai. Copy and verify the existing volumes first; see THREE_PC_MIGRATION.md. This deployment has not changed any services."
+  fi
+  unset MUMBAI_ON HYDERABAD_ON DELHI_ON HAPROXY2_HTTPS HAPROXY2_STATS
+  ok "3 region managers ready; distributed placement selected"
 fi
 if [ -n "$(docker ps -q --filter label=com.docker.compose.project=ha-lab)" ]; then
   die "the single-PC lab (docker compose project ha-lab) is running on this PC. It uses the same names and the RAM:

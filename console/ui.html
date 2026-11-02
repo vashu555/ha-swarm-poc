@@ -54,6 +54,17 @@ pre.log{background:#0b1220;color:#d1d5db;border-radius:10px;padding:10px 12px;ma
 a{color:var(--accent)}
 .row{display:flex;gap:10px;align-items:end;flex-wrap:wrap}
 .row > div{flex:1;min-width:200px}
+.topology-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px}
+.topology-zone{border:1px solid var(--line);border-top:4px solid var(--c);border-radius:12px;padding:14px;min-width:0}
+.topology-zone h3{margin:0;color:var(--c);font-size:18px}.topology-zone .host{margin:8px 0;min-height:42px;overflow-wrap:anywhere}
+.map-chip{display:inline-block;font-size:11px;border-radius:5px;padding:2px 5px;background:color-mix(in srgb,var(--muted) 12%,transparent);color:var(--muted)}
+.map-chip.good{background:color-mix(in srgb,var(--ok) 12%,transparent);color:var(--ok)}
+.map-chip.bad{background:color-mix(in srgb,var(--bad) 12%,transparent);color:var(--bad)}
+.map-chip.warn{background:color-mix(in srgb,var(--warn) 12%,transparent);color:var(--warn)}
+.map-component{padding:8px 0;border-top:1px solid var(--line)}.map-component-head{display:flex;align-items:center;justify-content:space-between;gap:6px}
+.map-component small{display:block;color:var(--muted);margin-top:4px;overflow-wrap:anywhere}.map-component button{padding:2px 7px;font-size:11px}
+.map-links{width:100%;height:70px;display:block}.map-links text{fill:var(--muted);font:12px system-ui}
+@media(max-width:900px){.topology-grid{grid-template-columns:1fr}.map-links{display:none}}
 </style>
 </head>
 <body>
@@ -75,18 +86,56 @@ const REG = {
   delhi:     {c: "var(--delhi)",     title: "Delhi",     what: "Third region: the tie-breaking vote. Third copy of every database and broker. Was oracle."},
 };
 const KINDS = ["etcd","pg","pgbouncer","kafka","rabbit","redis","sentinel","haproxy","api","relay","router","feed","bridge","worker","exchange","control","registry","web"];
-let S = null, Z = null, C = null, L = null, lastErr = "";   // L: the trading lab's live state, per zone
+let S = null, Z = null, C = null, L = null, M = null, pollBusy = false, lastErr = "";
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const view = () => (location.hash.replace("#/", "") || "auto");
 const dotFor = st => /^running|^ready|^Running|healthy|leader|streaming/i.test(st) ? "ok" : /pending|preparing|starting|assigned|accepted|created|restarting/i.test(st) ? "warn" : "bad";
 
 async function api(path, body) {
-  const r = await fetch(path, body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)});
-  const j = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
-  return j;
+  const controller = new AbortController(), timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const r = await fetch(path, {...(body === undefined ? {} : {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}), signal: controller.signal});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(j.error || ("HTTP " + r.status));
+    return j;
+  } finally { clearTimeout(timer); }
 }
+function topologyMap(map) {
+  if (!map) return `<div class="card">Loading the combined PC map…</div>`;
+  const stale = map.stale || !map.fetched_at || Date.now()/1000 - map.fetched_at > 15;
+  const names = {online:'Online',not_joined:'Not joined',departed:'Left / removed',unreachable:'Unreachable',drained:'Drained',manager_unreachable:'Manager link lost',duplicate_region:'Duplicate region',unknown:'Unknown'};
+  const cls = s => ['online','running','healthy','responding'].includes(s) ? 'good' : ['unreachable','departed','failed','unresponsive','duplicate_region'].includes(s) ? 'bad' : ['starting','pending','drained','manager_unreachable','degraded'].includes(s) ? 'warn' : '';
+  const chip = (label,state) => `<span class="map-chip ${cls(state)}">${esc(label)}</span>`;
+  const healthNames = {healthy:'Probe OK',responding:'Responding',unresponsive:'Probe failed',degraded:'Degraded',stale:'Probe stale',not_checked:'Not checked',unknown:'Probe unknown'};
+  const zones = S.regions.map(r => (map.zones || []).find(z => z.region === r) || {region:r,pc_state:'unknown',components:[]});
+  const cards = zones.map(z => {
+    const state = stale ? 'unknown' : z.pc_state, node = z.node;
+    const rows = z.components.map(c => {
+      const process = stale ? 'unknown' : c.state, health = stale ? 'stale' : c.health;
+      const canAct = !stale && map.control_available && !S.job.running && !['control','exchange'].includes(c.name) && ['running','stopped'].includes(c.state);
+      return `<div class="map-component" title="${esc(c.error || '')}"><div class="map-component-head"><b>${esc(c.name)}</b>
+        <button class="sec" ${canAct ? '' : 'disabled'} onclick="act('/api/lab/chaos',{target:'${c.name}',action:'${c.state === 'running' ? 'stop' : 'start'}'})">${c.state === 'running' ? 'Stop' : 'Start'}</button></div>
+        ${chip(process,process)} ${chip(healthNames[health] || health,health)}
+        <small>${esc(c.host || 'No assigned host')}${!stale && c.role ? ' · ' + esc(c.role) : ''}${!stale && map.probe_fresh && c.state === 'running' ? ` · ${Number(c.in).toFixed(1)} in / ${Number(c.out).toFixed(1)} out` : ''}</small></div>`;
+    }).join('');
+    return `<section class="topology-zone" style="--c:${REG[z.region].c}"><div class="hero"><h3>${REG[z.region].title}</h3>${chip('PC: '+(names[state] || state),state)}</div>
+      <div class="host">${node ? `<b>${esc(node.host)}</b><br><span class="muted">${esc(node.address)}${node.leader ? ' · Leader' : node.manager ? ' · Manager' : ' · Worker'}</span>` : '<span class="muted">Waiting for this region’s PC</span>'}</div>
+      <p class="muted">${stale ? 'Last snapshot; current state unknown' : ['unreachable','departed'].includes(z.pc_state) ? 'PC unavailable; component state unverified' : `${z.running || 0}/${z.components.length} workloads running · ${z.probe_issues || 0} probe alerts`}</p>
+      ${rows || '<p class="muted">No trading services deployed in this region.</p>'}</section>`;
+  }).join('');
+  const rate = (a,b) => stale || !map.probe_fresh ? 'Unavailable' : `${Number((map.edges || []).find(e => [e.from,e.to].includes(a) && [e.from,e.to].includes(b))?.rate || 0).toFixed(1)}/s activity`;
+  return `<div class="card" id="topology-map" data-stale="${stale ? '1' : '0'}"><div class="hero"><h2 style="margin:0">Combined live PC and component map</h2>
+    <span class="badge">${map.pilot ? 'Pilot · workloads share Mumbai' : 'Distributed placement'}</span><span class="map-age muted"></span></div>
+    <p class="muted">${stale ? 'Snapshot stale: connectivity and component state are unknown. Last known data remains visible.' : map.pilot ? 'Pilot is still running. Hyderabad and Delhi must join before their existing data can be transferred to those PCs.' : map.three_pc_ready ? 'All three region managers are connected.' : 'Waiting for all three region managers to connect.'}</p>
+    ${map.error ? `<div class="msg bad">${esc(map.error)}</div>` : ''}
+    ${!map.probe_fresh ? '<p class="muted">Service probes are unavailable or stale; running containers are not being reported as healthy.</p>' : ''}
+    <svg class="map-links" viewBox="0 0 900 70" role="img" aria-label="Observed application activity between zones"><path d="M150 45 H750 M150 45 Q450 -10 750 45" fill="none" stroke="var(--line)" stroke-width="3"/>
+      <circle cx="150" cy="45" r="6" fill="var(--mumbai)"/><circle cx="450" cy="45" r="6" fill="var(--hyderabad)"/><circle cx="750" cy="45" r="6" fill="var(--delhi)"/>
+      <text x="300" y="60" text-anchor="middle">${rate('mumbai','hyderabad')}</text><text x="600" y="60" text-anchor="middle">${rate('hyderabad','delhi')}</text><text x="450" y="14" text-anchor="middle">${rate('mumbai','delhi')}</text></svg>
+    <div class="topology-grid">${cards}</div><p class="muted" style="margin-bottom:0">PC connectivity, workload state and service probes are separate. Unreachable does not prove a PC is powered off. Activity is observed application traffic, not a network ping. Probe OK/Responding does not guarantee trading correctness.</p></div>`;
+}
+
 async function act(path, body) {
   lastErr = "";
   try { await api(path, body); } catch (e) { lastErr = e.message; }
@@ -284,6 +333,7 @@ function viewCombined() {
   return `<div class="card"><div class="hero"><span class="big" style="--c:var(--accent)">All zones</span>
       <span class="badge">Leader: ${C.leader ? esc(C.leader.hostname) + " (" + esc(C.leader.region) + ")" : "?"}</span>
       <span class="badge">${C.nodes.length} PCs</span></div></div>
+    ${topologyMap(M)}
     <div class="card"><h2>Live zone outages and recovery</h2><p class="muted">${C.pilot
       ? `<b>Pilot:</b> all three zones run on this PC. Disable zone stops every service of that zone, as if the zone were lost; each zone's page (click its name) has per-component Stop/Start. Watch the data path and the flow map below move to the surviving zones.`
       : `Zone down stops that PC's swarm workloads; Zone up starts them again. Managers and this console stay connected. Observe one zone at a time.`}</p></div>
@@ -299,8 +349,8 @@ function viewCombined() {
 }
 
 // ------------------------------------------------------------------ loop
-async function tick() {
-  try { S = await api("/api/state"); } catch (e) { $("#app").innerHTML = `<div class="card"><div class="msg bad">Console not answering: ${esc(e.message)}</div></div>`; return; }
+async function refreshView() {
+  try { S = await api("/api/state"); } catch (e) { if (M) M = {...M, stale:true, error:e.message}; $("#app").innerHTML = `<div class="card"><div class="msg bad">Console not answering: ${esc(e.message)}</div></div>` + (S && view().startsWith('combined') ? topologyMap(M) : ''); return; }
   const sw = S.swarm, joined = sw.state === "active" && sw.region;
   $("#host").textContent = S.hostname + (S.netbird.ip ? " · " + S.netbird.ip : "");
   $("#rolebadge").innerHTML = joined ? `<span class="badge r" style="background:${REG[sw.region].c}">${REG[sw.region].title}${sw.is_main ? " · main" : ""}</span>` : "";
@@ -316,9 +366,11 @@ async function tick() {
   try {
     if (!S.swarm.membership_error && v === "zone") Z = await api("/api/zone");
     if (!S.swarm.membership_error && v === "combined") C = await api("/api/combined");
+    if (!S.swarm.membership_error && v === "combined") M = await api('/api/topology').catch(e => ({...(M || {}),ok:false,stale:true,error:e.message}));
     if (!S.swarm.membership_error && (v === "zone" || v === "combined")) L = await api("/api/lab").catch(() => null);
   } catch (e) { lastErr = e.message; }
-  const html = S.swarm.membership_error ? recoveryCard() : v === "setup" ? (!S.netbird.connected ? viewNetbird() : viewChoose()) : v === "zone" ? viewZone(zoneRegion) : viewCombined();
+  if (S.swarm.membership_error && M) M = {...M,stale:true,error:S.swarm.membership_error};
+  const html = S.swarm.membership_error ? recoveryCard() + (v === 'combined' ? topologyMap(M) : '') : v === "setup" ? (!S.netbird.connected ? viewNetbird() : viewChoose()) : v === "zone" ? viewZone(zoneRegion) : viewCombined();
   // the lab's own live flow map (moving dots between services, all three zones), only in All zones on the main PC
   const fm = $("#flowmap"), wantMap = v === "combined" && L && L.ok && L.url.includes("127.0.0.1");
   if (wantMap && !fm.firstChild) fm.innerHTML = `<div class="card"><h2>Live flow map: every service in all three zones</h2>
@@ -332,6 +384,19 @@ async function tick() {
   const nl = $("#joblog"); if (nl && atEnd) nl.scrollTop = nl.scrollHeight;
   document.title = (joined ? (v === "combined" ? "All zones" : REG[zoneRegion].title + " zone") : "Choose a role") + " · HA Swarm";
 }
+async function tick() {
+  if (pollBusy) return;
+  pollBusy = true;
+  try { await refreshView(); } finally { pollBusy = false; }
+}
+setInterval(() => {
+  const map = $('#topology-map');
+  if (!map || !M || !M.fetched_at) return;
+  const age = Math.max(0, Math.floor(Date.now()/1000 - M.fetched_at));
+  if (age > 15 && map.dataset.stale !== '1') map.outerHTML = topologyMap(M);
+  const label = $('#topology-map .map-age');
+  if (label) label.textContent = `Snapshot ${age}s ago · probe snapshot ${M.probe_observed_at ? new Date(M.probe_observed_at*1000).toLocaleTimeString() : 'unavailable'}`;
+}, 1000);
 window.addEventListener("hashchange", tick);
 tick(); setInterval(tick, 2500);
 </script>

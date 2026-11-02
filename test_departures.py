@@ -1,4 +1,5 @@
 import importlib.util
+import ipaddress
 from pathlib import Path
 import unittest
 import tempfile
@@ -17,14 +18,14 @@ def node(id='self', state='ready', manager=True, leader=False):
 
 class Departures(unittest.TestCase):
     def test_stale_membership_can_clear_only_after_authoritative_removal(self):
-        local = {'NodeID': 'removed', 'ControlAvailable': True, 'LocalNodeState': 'pending', 'RemoteManagers': [{'Addr': '100.93.137.149:2377'}], 'Cluster': {'ID': 'verified-cluster'}}
+        local = {'NodeID': 'removed', 'ControlAvailable': True, 'LocalNodeState': 'pending', 'RemoteManagers': [{'Addr': '192.0.2.1:2377'}], 'Cluster': {'ID': 'verified-cluster'}}
         peer = {'manager': True, 'leader': {'hostname': 'main'}, 'cluster_id': 'verified-cluster', 'member_ids': ['main', 'other']}
         with patch.object(c, 'docker_info', return_value={'ok': True, 'swarm': local}), patch.object(c, 'nodes', return_value=[]), patch.object(c, 'settings', return_value={}), patch.object(c, 'http_json', return_value=(200, peer)), patch.object(c, 'stream') as stream:
             c.job_leave()
         stream.assert_called_once_with(['docker', 'swarm', 'leave', '--force'])
 
     def test_force_leave_refused_for_live_member_or_foreign_cluster(self):
-        local = {'NodeID': 'self', 'RemoteManagers': [{'Addr': '100.93.137.149:2377'}], 'Cluster': {'ID': 'our-cluster'}}
+        local = {'NodeID': 'self', 'RemoteManagers': [{'Addr': '192.0.2.1:2377'}], 'Cluster': {'ID': 'our-cluster'}}
         for peer in (
             {'manager': True, 'leader': {}, 'cluster_id': 'our-cluster', 'member_ids': ['other']},
             {'manager': True, 'leader': {'hostname': 'main'}, 'cluster_id': 'foreign-cluster', 'member_ids': ['other']},
@@ -36,28 +37,28 @@ class Departures(unittest.TestCase):
 
     def test_concurrent_identity_updates_preserve_main_pc_setting(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(c, 'STATE_DIR', Path(directory)):
-            c.save_settings(main_ip='100.93.137.149')
+            c.save_settings(main_ip='192.0.2.1')
             def update(i):
                 c.save_settings(identity={'node_id': str(i), 'region': 'delhi'})
-                self.assertEqual(c.settings()['main_ip'], '100.93.137.149')
+                self.assertEqual(c.settings()['main_ip'], '192.0.2.1')
             with ThreadPoolExecutor(max_workers=8) as pool:
                 list(pool.map(update, range(100)))
-            self.assertEqual(c.settings()['main_ip'], '100.93.137.149')
+            self.assertEqual(c.settings()['main_ip'], '192.0.2.1')
 
     def test_join_tokens_are_redacted_from_job_log(self):
-        c.log('docker swarm join --token SWMTKN-1-private-token 100.1.2.3')
+        c.log('docker swarm join --token SWMTKN-1-private-token 192.0.2.3')
         self.assertNotIn('SWMTKN-', c.JOB['log'][-1])
         self.assertIn('[join token hidden]', c.JOB['log'][-1])
 
     def test_missing_region_label_can_resume_in_verified_swarm(self):
-        sw = {'docker': {'ok': True, 'desktop': False}, 'state': 'active', 'region': '', 'manager': True, 'node_id': 'self', 'nodes': [{'main': True, 'state': 'ready', 'addr': '100.93.137.149'}]}
-        with patch.object(c, 'netbird', return_value={'ip': '100.93.151.120'}), patch.object(c, 'swarm', return_value=sw), patch.object(c, 'http_json', side_effect=[(200, {'token': 'same-token'}), (200, {})]), patch.object(c, 'sh', return_value=(0, 'same-token')), patch.object(c, 'stream') as stream:
+        sw = {'docker': {'ok': True, 'desktop': False}, 'state': 'active', 'region': '', 'manager': True, 'node_id': 'self', 'nodes': [{'main': True, 'state': 'ready', 'addr': '192.0.2.1'}]}
+        with patch.object(c, 'netbird', return_value={'ip': '192.0.2.2'}), patch.object(c, 'swarm', return_value=sw), patch.object(c, 'http_json', side_effect=[(200, {'token': 'same-token'}), (200, {})]), patch.object(c, 'sh', return_value=(0, 'same-token')), patch.object(c, 'stream') as stream:
             c.job_become('delhi')
         stream.assert_called_once_with(['docker', 'node', 'update', '--label-add', 'region=delhi', 'self'])
 
     def test_region_resume_rejects_a_different_swarm(self):
-        sw = {'docker': {'ok': True, 'desktop': False}, 'state': 'active', 'region': '', 'manager': True, 'node_id': 'self', 'nodes': [{'main': True, 'state': 'ready', 'addr': '100.93.137.149'}]}
-        with patch.object(c, 'netbird', return_value={'ip': '100.93.151.120'}), patch.object(c, 'swarm', return_value=sw), patch.object(c, 'http_json', side_effect=[(200, {'token': 'different-token'}), (200, {})]) as http, patch.object(c, 'sh', return_value=(0, 'local-token')), patch.object(c, 'stream') as stream:
+        sw = {'docker': {'ok': True, 'desktop': False}, 'state': 'active', 'region': '', 'manager': True, 'node_id': 'self', 'nodes': [{'main': True, 'state': 'ready', 'addr': '192.0.2.1'}]}
+        with patch.object(c, 'netbird', return_value={'ip': '192.0.2.2'}), patch.object(c, 'swarm', return_value=sw), patch.object(c, 'http_json', side_effect=[(200, {'token': 'different-token'}), (200, {})]) as http, patch.object(c, 'sh', return_value=(0, 'local-token')), patch.object(c, 'stream') as stream:
             with self.assertRaises(c.Reject):
                 c.job_become('delhi')
         stream.assert_not_called()
@@ -83,7 +84,7 @@ class Departures(unittest.TestCase):
 
     def test_pending_join_is_not_started_again(self):
         for state in ('pending', 'error', 'locked'):
-            with self.subTest(state=state), patch.object(c, 'netbird', return_value={'ip': '100.93.151.120'}), patch.object(c, 'swarm', return_value={'docker': {'ok': True, 'desktop': False}, 'state': state}), patch.object(c, 'ensure_mtu') as mtu, patch.object(c, 'discover') as discover:
+            with self.subTest(state=state), patch.object(c, 'netbird', return_value={'ip': '192.0.2.2'}), patch.object(c, 'swarm', return_value={'docker': {'ok': True, 'desktop': False}, 'state': state}), patch.object(c, 'ensure_mtu') as mtu, patch.object(c, 'discover') as discover:
                 with self.assertRaises(c.Reject):
                     c.job_become('delhi')
                 mtu.assert_not_called()
@@ -107,10 +108,17 @@ class Departures(unittest.TestCase):
     def test_membership_failure_blocks_new_enrollment(self):
         with patch.object(c, 'peer_info', return_value={'manager': True, 'membership_error': 'no leader'}):
             with self.assertRaises(c.Reject):
-                c.peer_enroll({'region': 'delhi'}, '100.93.151.120')
+                c.peer_enroll({'region': 'delhi'}, '192.0.2.2')
 
     def setUp(self):
         c.JOB['log'] = []
+        # Unit tests must never discover the live pilot and send real zone-drill requests.
+        pilot = patch.object(c, 'lab_is_pilot', return_value=False)
+        pilot.start()
+        self.addCleanup(pilot.stop)
+        network = patch.object(c, 'NETBIRD_NET', ipaddress.ip_network('192.0.2.0/24'))
+        network.start()
+        self.addCleanup(network.stop)
 
     def test_worker_leaves_without_force(self):
         with patch.object(c, 'docker_info', return_value=info(False)), patch.object(c, 'stream') as stream:

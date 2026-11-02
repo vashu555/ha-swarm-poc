@@ -32,6 +32,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent          # the repository
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from live_map import snapshot as topology_snapshot
 UI = Path(__file__).resolve().parent / "ui.html"
 PORT = int(os.environ.get("CONSOLE_PORT", "9790"))
 WG_IF = os.environ.get("WG_IF", "wt0")
@@ -852,6 +854,11 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send(200, view_zone())
             if method == "GET" and path == "/api/combined":
                 return self.send(200, view_combined())
+            if method == "GET" and path == "/api/topology":
+                def control_snapshot():
+                    code, value = http_json(f"{lab_base()}/api/state", timeout=4)
+                    return value if code == 200 else None
+                return self.send(200, topology_snapshot(control_snapshot))
             if method == "GET" and path == "/api/lab":
                 return self.send(200, view_lab())
             if method == "POST":
