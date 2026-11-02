@@ -104,14 +104,10 @@ Step "5/7  Start the node console (a service inside Ubuntu, port 9790)"
 Invoke-Ubuntu "bash $AppDir/console/install-service.sh"
 
 # ------------------------------------------------------------------ 6. keep Ubuntu running
-Step "6/7  Keep Ubuntu running in the background (otherwise this PC drops out of the swarm)"
-$alive = Get-CimInstance Win32_Process -Filter "Name='wsl.exe'" -ErrorAction SilentlyContinue |
-         Where-Object { $_.CommandLine -match 'sleep infinity' }
-if ($alive) { Info "already running" }
-else {
-    Start-Process wsl.exe -ArgumentList '-d', $script:Distro, '--exec', 'sleep', 'infinity' -WindowStyle Hidden
-    Info "started (hidden). Also stop this PC from sleeping while the POC runs."
-}
+Step "6/7  Keep Ubuntu running now and after Windows logon"
+$helper = Join-Path "\\wsl.localhost\$script:Distro" ($AppDir.TrimStart('/').Replace('/', '\') + '\windows\keep-wsl-alive.ps1')
+& $helper -Distro $script:Distro -InstallLogonTask
+Info "Keep this PC awake while the POC runs. Stop the HA Swarm WSL task before intentionally shutting down Ubuntu."
 
 # ------------------------------------------------------------------ 7. open the console
 Step "7/7  Open the console"
