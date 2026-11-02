@@ -95,14 +95,15 @@ x-rabbit: &rabbit
 x-redis: &redis
   image: redis:7.4-alpine
   networks: [backbone]
-  dns: [127.0.0.1]
+  # musl retries SERVFAIL and blocks Redis/Sentinel. Use the host's fast NXDOMAIN responder.
+  dns: ["${LAB_FALLBACK_DNS:-172.17.0.1}"]
   entrypoint: ["sh", "/lab/redis-entry.sh"]
   configs: [{source: redis-entry, target: /lab/redis-entry.sh}]
 
 x-sentinel: &sentinel
   image: redis:7.4-alpine
   networks: [backbone]
-  dns: [127.0.0.1]
+  dns: ["${LAB_FALLBACK_DNS:-172.17.0.1}"]
   entrypoint: ["sh", "/lab/sentinel-entry.sh"]
   configs: [{source: sentinel-entry, target: /lab/sentinel-entry.sh}]
 
@@ -376,7 +377,7 @@ services:
     environment: {SERVICE: control, SITE: ops, PGBOUNCERS: "pgbouncer-1,pgbouncer-2", DB_USER: app, DB_PASSWORD: apppass,
                   LAYOUT: swarm, SWARM_STACK: hal}
     ports: [{target: 9700, published: 9700, mode: host}]
-    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "${LAB_SRC:-/mnt/d/HA_Trading_Lab}/app/control.py:/app/control.py:ro"]
+    volumes: ["/var/run/docker.sock:/var/run/docker.sock", "${LAB_SRC:-/mnt/d/HA_Trading_Lab}/app/control.py:/app/control.py:ro", "${LAB_SRC:-/mnt/d/HA_Trading_Lab}/app/ui/index.html:/app/ui/index.html:ro", "${LAB_SRC:-/mnt/d/HA_Trading_Lab}/app/swarm_faults.py:/app/swarm_faults.py:ro"]
     deploy: {<<: *deploy, placement: *mumbai, labels: {lab.region: mumbai}, resources: {limits: {memory: 300M}}}
 
 networks:

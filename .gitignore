@@ -4,6 +4,7 @@ config/certs/*.key
 config/certs/*.crt
 __pycache__/
 *.pyc
+backups/
 
 # generated local integration test artifacts
 qa-alpine.tar

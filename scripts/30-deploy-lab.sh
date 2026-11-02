@@ -6,6 +6,8 @@
 #   RESOLVE=never scripts/30-deploy-lab.sh     if you copied the images to each PC by hand (docker load)
 set -euo pipefail
 source "$(dirname "$0")/../env.sh"
+systemctl is-active --quiet ha-lab-negative-dns.service \
+  || die "install the DNS fallback on every PC first: sudo bash scripts/install-lab-dns.sh (or rerun start-node.ps1)"
 PILOT=""; [ "${1:-}" = --pilot ] && PILOT=yes
 
 say "Preflight"

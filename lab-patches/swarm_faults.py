@@ -104,6 +104,13 @@ class DrillLedger:
                     if kind=='sentinel': holder=next((name for name in candidates if (st.get('redis') or {}).get('sentinels',{}).get(name)),None)
                     if kind=='etcd': holder=next((name for name in candidates if (st.get('etcd') or {}).get(name,{}).get('up')),None)
                     if kind=='rabbitmq': holder=next((name for name in candidates if (st.get('rabbit') or {}).get('nodes',{}).get(name)),None)
+                if kind == 'redis':
+                    rd = st.get('redis') or {}
+                    holder = rd.get('master') if rd.get('write_ready') and rd.get('master') != target else None
+                if kind == 'sentinel' and holder:
+                    detail = (st.get('redis') or {}).get('sentinel_details', {}).get(holder, {})
+                    if detail.get('tilt') or not detail.get('quorum_ok'):
+                        holder = None
                 if holder:
                     observed = time.time()
                     row.update(status='recovered',replacement=holder,observed_at=observed,

@@ -1,0 +1,7 @@
+.chip.unhealthy{border-left-color:var(--bad);background:var(--bad-bg)}
+.chip.degraded{border-left-color:var(--warn);background:var(--warn-bg)}
+.redis-health{padding:12px 14px;border:1px solid var(--line);border-radius:12px;margin-bottom:10px;font-size:12px}
+.redis-health div{margin-top:5px;line-height:1.5}
+.redis-health.healthy{background:var(--ok-bg);border-color:var(--ok)}
+.redis-health.degraded{background:var(--warn-bg);border-color:var(--warn)}
+.redis-health.unhealthy{background:var(--bad-bg);border-color:var(--bad)}

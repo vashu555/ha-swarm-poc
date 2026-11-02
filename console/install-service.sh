@@ -2,6 +2,7 @@
 # Installs the node console as a systemd service in Ubuntu (run as root; start-node.ps1 does this for you).
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
+bash "$DIR/scripts/install-lab-dns.sh"
 mkdir -p /etc/systemd/system/docker.service.d
 cat > /etc/systemd/system/docker.service.d/10-wait-netbird.conf <<EOF
 [Unit]

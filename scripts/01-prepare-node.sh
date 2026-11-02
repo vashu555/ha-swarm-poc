@@ -26,6 +26,7 @@ if docker info --format '{{.OperatingSystem}}' | grep -qi 'docker desktop'; then
      (and turn off its WSL integration), then run this script again."
 fi
 ok "Docker Engine $(docker version --format '{{.Server.Version}}')"
+sudo bash "$POC_DIR/scripts/install-lab-dns.sh"
 
 say "3/5  NetBird (the private network between the PCs)"
 if ! command -v netbird >/dev/null; then

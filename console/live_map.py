@@ -41,10 +41,19 @@ def probe_health(name, status):
     if name.startswith('rabbit-'):
         return 'healthy' if (status.get('rabbit') or {}).get('nodes', {}).get(name) else 'unresponsive'
     if name.startswith('redis-'):
-        node = (status.get('redis') or {}).get('nodes', {}).get(name, {})
-        return 'unresponsive' if not node.get('up') else 'degraded' if node.get('link') == 'down' else 'healthy'
+        rd = status.get('redis') or {}
+        node = rd.get('nodes', {}).get(name, {})
+        if not node.get('up'):
+            return 'unresponsive'
+        if node.get('role') == 'master':
+            return 'healthy' if rd.get('master') == name and node.get('write_ready') else 'degraded'
+        return 'healthy' if node.get('link') == 'up' else 'degraded'
     if name.startswith('sentinel-'):
-        return 'healthy' if (status.get('redis') or {}).get('sentinels', {}).get(name) else 'unresponsive'
+        rd = status.get('redis') or {}
+        detail = rd.get('sentinel_details', {}).get(name, {})
+        if not rd.get('sentinels', {}).get(name):
+            return 'unresponsive'
+        return 'healthy' if detail and not detail.get('tilt') and detail.get('quorum_ok') else 'degraded'
     if name.startswith('pgbouncer-'):
         return 'healthy' if (status.get('bouncers') or {}).get(name, {}).get('up') else 'unresponsive'
     if name.startswith('haproxy-'):

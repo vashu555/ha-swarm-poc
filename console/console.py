@@ -658,7 +658,7 @@ def view_lab() -> dict:
     for what, who in (("Orders are written to (PostgreSQL leader)", holder("pg-", "LEADER")),
                       ("Orders sent to the exchange by (active router)", holder("router-", "ACTIVE")),
                       ("Notifications queue led by (RabbitMQ)", holder("rabbit-", "QUEUE LEADER")),
-                      ("Sessions stored on (Redis master)", holder("redis-", "MASTER")),
+                      ("Redis extras primary (sessions use signed tokens)", holder("redis-", "MASTER")),
                       ("Database vote led by (etcd leader)", holder("etcd-", "LEADER"))):
         path.append({"what": what, "who": who, "zone": zone_of(who) if who else ""})
     kafka = [{"broker": n, "zone": zone_of(n), "partitions": int(m.group(1))}

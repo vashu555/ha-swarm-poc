@@ -134,8 +134,9 @@ Day to day: `scripts/status.sh` (where everything runs), `scripts/chaos.sh` (fai
 - **Windows browsers can't open other PCs' pages directly** (NetBird runs inside Ubuntu, not in Windows). Each PC's
   console shows its own pages on 127.0.0.1, and the main PC's *All zones* view shows every region. To open another
   PC's pages from Windows, also install NetBird for Windows.
-- **The lab dashboard's container boxes and chaos buttons** look for Docker Compose containers, so they don't see
-  Swarm's. Audit, traders and order flow work; the node console and `scripts/chaos.sh` replace the rest.
+- **The lab dashboard is Swarm aware.** Build installs the controller/UI patches from `lab-patches/` into the
+  separate lab source. The combined map separates container state, application health, Redis write readiness,
+  and Sentinel voting readiness. Injected failures stay held until Restore.
 - **Backups** (pgBackRest via the dashboard) only reach the database on the main PC; each PC keeps its own backup volume.
 - **Security is POC level:** any NetBird peer can ask a manager for a join token, and the registry, dashboard and
   console API are open to NetBird peers. Your NetBird network (who gets a setup key) is the fence. Lab passwords
@@ -154,3 +155,4 @@ Day to day: `scripts/status.sh` (where everything runs), `scripts/chaos.sh` (fai
 | `stacks/hello.yml`, `stacks/registry.yml` | the demo service, the swarm's image registry |
 | `config/` | HAProxy, RabbitMQ, Redis, Sentinel files (delivered as Swarm configs); the lab certificate is created on first deploy |
 | `docs/HOW_SWARM_WORKS.md` | how Swarm works, explained on this POC |
+| `docs/REDIS_FAILOVER.md` | Redis DNS/TILT repair, session fallback policy, upgrade steps and measured local drills |
