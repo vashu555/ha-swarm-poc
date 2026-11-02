@@ -70,17 +70,19 @@ class Departures(unittest.TestCase):
                 c.job_zone('mumbai', 'down')
         stream.assert_not_called()
 
-    def test_zone_down_drains_selected_pc_only(self):
+    def test_zone_down_crashes_selected_workloads_without_draining_pc(self):
         members = [dict(node(r), region=r, availability='active') for r in c.REGIONS]
-        with patch.object(c, 'swarm', return_value={'is_main': True, 'nodes': members}), patch.object(c, 'sh', return_value=(0, 'service-id')), patch.object(c, 'stream') as stream:
+        with patch.object(c, 'swarm', return_value={'is_main': True, 'nodes': members}), patch.object(c, 'sh', return_value=(0, 'service-id')), patch.object(c, 'lab_base', return_value='http://fixture'), patch.object(c, 'http_json', return_value=(200, {'ok':True})) as http, patch.object(c, 'stream') as stream:
             c.job_zone('delhi', 'down')
-        stream.assert_called_once_with(['docker', 'node', 'update', '--availability', 'drain', 'delhi'])
+        stream.assert_not_called()
+        http.assert_called_once_with('http://fixture/api/site', {'site':'oracle','action':'down'},timeout=30)
 
     def test_zone_up_can_restore_after_drill(self):
-        members = [dict(node('delhi'), region='delhi', availability='drain')]
-        with patch.object(c, 'swarm', return_value={'is_main': True, 'nodes': members}), patch.object(c, 'stream') as stream:
+        members = [dict(node('delhi'), region='delhi', availability='active')]
+        with patch.object(c, 'swarm', return_value={'is_main': True, 'nodes': members}), patch.object(c, 'lab_base', return_value='http://fixture'), patch.object(c, 'http_json', return_value=(200, {'ok':True})) as http, patch.object(c, 'stream') as stream:
             c.job_zone('delhi', 'up')
-        stream.assert_called_once_with(['docker', 'node', 'update', '--availability', 'active', 'delhi'])
+        stream.assert_not_called()
+        http.assert_called_once_with('http://fixture/api/site', {'site':'oracle','action':'up'},timeout=30)
 
     def test_pending_join_is_not_started_again(self):
         for state in ('pending', 'error', 'locked'):

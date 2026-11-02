@@ -117,7 +117,7 @@ function topologyMap(map) {
       const process = stale ? 'unknown' : c.state, health = stale ? 'stale' : c.health;
       const canAct = !stale && map.control_available && !S.job.running && !['control','exchange'].includes(c.name) && ['running','stopped'].includes(c.state);
       return `<div class="map-component" title="${esc(c.error || '')}"><div class="map-component-head"><b>${esc(c.name)}</b>
-        <button class="sec" ${canAct ? '' : 'disabled'} onclick="act('/api/lab/chaos',{target:'${c.name}',action:'${c.state === 'running' ? 'stop' : 'start'}'})">${c.state === 'running' ? 'Stop' : 'Start'}</button></div>
+        <button class="sec" ${canAct ? '' : 'disabled'} onclick="act('/api/lab/chaos',{target:'${c.name}',action:'${c.state === 'running' ? 'kill' : 'start'}'})">${c.state === 'running' ? 'Crash' : 'Restore'}</button></div>
         ${chip(process,process)} ${chip(healthNames[health] || health,health)}
         <small>${esc(c.host || 'No assigned host')}${!stale && c.role ? ' · ' + esc(c.role) : ''}${!stale && map.probe_fresh && c.state === 'running' ? ` · ${Number(c.in).toFixed(1)} in / ${Number(c.out).toFixed(1)} out` : ''}</small></div>`;
     }).join('');
@@ -226,14 +226,14 @@ function zoneLabCard(region) {
   const rows = comps.map(c => `<tr><td><span class="dot ${dotFor(c.state)}"></span><b>${esc(c.name)}</b></td>
      <td>${c.role ? `<span class="badge">${esc(c.role)}</span>` : ""}</td>
      <td>${c.in || c.out ? `${c.in} in · ${c.out} out /s` : `<span class="muted">idle</span>`}</td><td class="muted">${esc(c.text)}</td>
-     <td>${c.state === "running" ? `<button class="sec" onclick="act('/api/lab/chaos',{target:'${c.name}',action:'stop'})">Stop</button>`
-                                 : `<button onclick="act('/api/lab/chaos',{target:'${c.name}',action:'start'})">Start</button>`}</td></tr>`).join("");
+     <td>${c.state === "running" ? `<button class="sec" onclick="act('/api/lab/chaos',{target:'${c.name}',action:'kill'})">Crash</button>`
+                                 : `<button onclick="act('/api/lab/chaos',{target:'${c.name}',action:'start'})">Restore</button>`}</td></tr>`).join("");
   return `<div class="card" style="border-top:4px solid ${R.c}"><div class="hero"><span class="big" style="--c:${R.c}">${R.title} zone</span>
       <span class="badge">${running}/${comps.length} components running</span>${down ? `<span class="badge r" style="background:var(--bad)">ZONE DOWN</span>` : ""}
       <span style="flex:1"></span>
-      <button class="danger" ${S.job.running || down ? "disabled" : ""} onclick="if(confirm('Disable the whole ${R.title} zone? Every service in it stops, as if the zone were lost.'))act('/api/zone-drill',{region:'${region}',action:'down'})">Disable zone</button>
-      <button ${S.job.running || (!down && running === comps.length) ? "disabled" : ""} onclick="act('/api/zone-drill',{region:'${region}',action:'up'})">Enable zone</button></div>
-    <p class="muted">Each row is one real service of this zone. <b>Stop</b> fails just that component; <b>Disable zone</b> stops them all, like losing the zone.
+      <button class="danger" ${S.job.running || down ? "disabled" : ""} onclick="if(confirm('Disable the whole ${R.title} zone? Every service in it stops, as if the zone were lost.'))act('/api/zone-drill',{region:'${region}',action:'down'})">Crash zone workloads</button>
+      <button ${S.job.running || (!down && running === comps.length) ? "disabled" : ""} onclick="act('/api/zone-drill',{region:'${region}',action:'up'})">Restore zone</button></div>
+    <p class="muted">Crash sends SIGKILL to the real task and holds it down until Restore. A zone drill crashes its lab workloads; the PC and its manager stay on.
       Watch "Data path right now" below (and All zones on the main PC): leaders and traffic move to the other zones, then come back.</p>
     ${L.ready ? "" : `<div class="msg ok">Lab starting: ${esc(L.boot || "")}</div>`}
     <table><tr><th>Component</th><th>Role now</th><th>Traffic</th><th>State</th><th></th></tr>${rows}</table>${errBox()}</div>`;
@@ -324,8 +324,8 @@ function viewCombined() {
     return `<div class="card" style="border-top:4px solid ${R.c}"><h2><a href="#/zone/${r}" style="color:${R.c}">${esc(R.title)} ↗</a></h2>
       <p><b>${down ? "ZONE DOWN" : running === comps.length ? "All running" : `${comps.length - running} stopped`}</b> · ${running}/${comps.length} components</p>
       <p class="muted" style="min-height:38px">${leads ? "Leads: " + leads : "Leads nothing right now"}</p>
-      <button class="danger" ${S.job.running || down ? "disabled" : ""} onclick="if(confirm('Disable the whole ${R.title} zone?'))act('/api/zone-drill',{region:'${r}',action:'down'})">Disable zone</button>
-      <button ${S.job.running || (!down && running === comps.length) ? "disabled" : ""} onclick="act('/api/zone-drill',{region:'${r}',action:'up'})">Enable zone</button></div>`;
+      <button class="danger" ${S.job.running || down ? "disabled" : ""} onclick="if(confirm('Disable the whole ${R.title} zone?'))act('/api/zone-drill',{region:'${r}',action:'down'})">Crash zone workloads</button>
+      <button ${S.job.running || (!down && running === comps.length) ? "disabled" : ""} onclick="act('/api/zone-drill',{region:'${r}',action:'up'})">Restore zone</button></div>`;
   }).join("") : "";
   const zoneCards = (C.pilot && (!L?.ok || L.stale) ? `<div class="card">Zone status is unavailable. Controls will return when live status recovers.</div>` : pilotCards) || S.regions.map(r => {
     const n = C.nodes.find(n => n.region === r), R = REG[r];
@@ -333,16 +333,16 @@ function viewCombined() {
     const running = tasks.filter(t => /^Running\b/i.test(t.state)).length;
     const status = !n ? 'PC not joined' : n.state !== 'ready' ? 'PC offline' : n.availability === 'drain' ? 'Zone stopping / stopped' : !C.lab_deployed ? 'Lab not deployed' : running < tasks.length ? 'Tasks starting / pending' : 'Tasks running';
     return `<div class="card" style="border-top:4px solid ${R.c}"><h2>${esc(R.title)}</h2><p><b>${status}</b></p><p class="muted">${n ? esc(n.hostname) + ' · ' + esc(n.addr) : 'Waiting for this PC'}<br>${running}/${tasks.length} trading tasks running</p>
-      <button class="danger" ${S.job.running || !allReady || !C.lab_deployed ? 'disabled' : ''} onclick="if(confirm('Stop the swarm workloads in ${r}?'))act('/api/zone-drill',{region:'${r}',action:'down'})">Zone down</button>
-      <button ${S.job.running || !n || n.state !== 'ready' || n.availability !== 'drain' ? 'disabled' : ''} onclick="act('/api/zone-drill',{region:'${r}',action:'up'})">Zone up</button></div>`;
+      <button class="danger" ${S.job.running || !allReady || !C.lab_deployed ? 'disabled' : ''} onclick="if(confirm('Stop the swarm workloads in ${r}?'))act('/api/zone-drill',{region:'${r}',action:'down'})">Crash zone workloads</button>
+      <button ${S.job.running || !n || n.state !== 'ready' || !L?.zones_down?.includes(r) ? 'disabled' : ''} onclick="act('/api/zone-drill',{region:'${r}',action:'up'})">Restore zone</button></div>`;
   }).join('');
   return `<div class="card"><div class="hero"><span class="big" style="--c:var(--accent)">All zones</span>
       <span class="badge">Leader: ${C.leader ? esc(C.leader.hostname) + " (" + esc(C.leader.region) + ")" : "?"}</span>
       <span class="badge">${C.nodes.length} PCs</span></div></div>
     ${topologyMap(M)}
     <div class="card"><h2>Live zone outages and recovery</h2><p class="muted">${C.pilot
-      ? `<b>Pilot:</b> all three zones run on this PC. Disable zone stops every service of that zone, as if the zone were lost; each zone's page (click its name) has per-component Stop/Start. Watch the data path and the flow map below move to the surviving zones.`
-      : `Zone down stops that PC's swarm workloads; Zone up starts them again. Managers and this console stay connected. Observe one zone at a time.`}</p></div>
+      ? `<b>Pilot:</b> all three zones run on this PC. Crash zone workloads stops every service of that zone, as if the zone were lost; each zone's page has per-component Crash/Restore. Watch the data path and the flow map below move to the surviving zones.`
+      : `Crash zone workloads abruptly kills its lab tasks. Restore zone brings them back. The PC, its manager and console remain connected; this simulates workload loss, not a physical power cut.`}</p></div>
     <div class="grid g3">${zoneCards}</div>
     ${dataPathCard(null)}
     <div class="card"><h2>PCs (swarm nodes)</h2><p class="muted">Departed PCs are removed and their regions freed automatically after Docker detects them as down. Cleanup requires a manager majority. Closing the browser does not leave the swarm.</p><table><tr><th>Region</th><th>Host</th><th>NetBird IP</th><th>State</th><th>Availability</th><th>Manager</th><th></th></tr>${nodes}</table></div>
@@ -352,6 +352,19 @@ function viewCombined() {
       (<code>docker compose down</code> in /mnt/d/HA_Trading_Lab).</p>${acts}${errBox()}
       <p style="margin-bottom:0"><a href="http://127.0.0.1:9700" target="_blank">Lab dashboard</a> · <a href="https://127.0.0.1:8443/live" target="_blank">Trader page</a> · <a href="http://127.0.0.1:8404/stats" target="_blank">HAProxy stats</a></p></div>
     ${jobBox()}`;
+}
+
+// Measurements are observations, not promises of an election deadline.
+function failurePanel(rows) {
+  const now = Date.now()/1000;
+  return `<section class="card"><h2>Abrupt failure and recovery timing</h2>
+    <p>Crash kills the real process without a shutdown grace period. Injected failures stay down until Restore.
+    PostgreSQL uses a 20 s leader lease; other components have their own detection timeouts. Peer readiness and successful transactions are separate measurements.</p>
+    <table><thead><tr><th>Failed component</th><th>Crash request → confirmed / held</th><th>Recovery observed after crash</th><th>Replacement / status</th></tr></thead>
+    <tbody>${rows.map(r=>`<tr><td><b>${esc(r.target)}</b><br>${new Date(r.requested_at*1000).toLocaleTimeString()}</td>
+      <td>${r.signal_ms==null?'Not confirmed':Number(r.signal_ms).toFixed(0)+' ms'}</td>
+      <td>${r.elapsed_s!=null?Number(r.elapsed_s).toFixed(1)+' s':r.status==='waiting'?(Math.max(0,now-r.killed_at)).toFixed(1)+' s · waiting':esc(r.status)}</td>
+      <td>${esc(r.replacement||r.note||r.status)}</td></tr>`).join('')||'<tr><td colspan="4">No abrupt failure measured since the controller started.</td></tr>'}</tbody></table></section>`;
 }
 
 // ------------------------------------------------------------------ loop
@@ -416,7 +429,8 @@ async function refreshView() {
     : `<a href="#/zone" class="${v === 'zone' ? 'on' : ''}">My zone</a>`)
     + (joined && sw.is_main ? `<a href="#/combined" class="${v === 'combined' ? 'on' : ''}">All zones</a>` : ''));
   if (sw.membership_error && M) M = {...M,stale:true,error:sw.membership_error};
-  const html = sw.membership_error ? recoveryCard() + (v === 'combined' ? topologyMap(M) : '') : v === 'setup' ? (!S.netbird.connected ? viewNetbird() : viewChoose()) : v === 'zone' ? viewZone(zoneRegion) : viewCombined();
+  let html = sw.membership_error ? recoveryCard() + (v === 'combined' ? topologyMap(M) : '') : v === 'setup' ? (!S.netbird.connected ? viewNetbird() : viewChoose()) : v === 'zone' ? viewZone(zoneRegion) : viewCombined();
+  if (!sw.membership_error && L?.ok && !L.stale && ['zone','combined'].includes(v)) html = failurePanel(L.failure_drills || []) + html;
   const fm = $('#flowmap');
   const wantMap = v === 'combined' && !sw.membership_error && (fm.firstChild || (L?.ok && L.url.includes('127.0.0.1')));
   if (wantMap && !fm.firstChild) fm.innerHTML = `<div class="card"><h2>Live flow map: every service in all three zones</h2>

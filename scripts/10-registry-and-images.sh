@@ -5,6 +5,11 @@ set -euo pipefail
 source "$(dirname "$0")/../env.sh"
 [ -d "$LAB_SRC/app" ] || die "lab source not found at $LAB_SRC (set LAB_SRC in env.sh)"
 
+# Keep the separate lab source's existing fixes and install abrupt drills before building.
+if ! grep -q 'def swarm_chaos(' "$LAB_SRC/app/control.py"; then
+  python3 "$POC_DIR/scripts/patch-crash-drills.py" "$LAB_SRC/app" \
+    --backup "$LAB_SRC/backups/crash-drills-$(date -u +%Y%m%dT%H%M%SZ)"
+fi
 say "1/3  Registry (stack 'infra', runs on region=$FIRST_REGION)"
 FIRST_REGION="$FIRST_REGION" docker stack deploy --detach=true -c "$POC_DIR/stacks/registry.yml" infra
 for _ in $(seq 1 60); do curl -fs "http://$REGISTRY/v2/" >/dev/null 2>&1 && break; sleep 2; done

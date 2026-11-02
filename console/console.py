@@ -35,6 +35,7 @@ ROOT = Path(__file__).resolve().parent.parent          # the repository
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from live_map import snapshot as topology_snapshot, engine_get
 from read_cache import ReadCache
+from fault_agent import authorized as crash_authorized, crash_local
 UI = Path(__file__).resolve().parent / "ui.html"
 PORT = int(os.environ.get("CONSOLE_PORT", "9790"))
 WG_IF = os.environ.get("WG_IF", "wt0")
@@ -575,9 +576,12 @@ def job_zone(region: str, action: str) -> None:
         rc, out = sh(["docker", "service", "ls", "-q", "--filter", "label=com.docker.stack.namespace=hal"])
         if rc or not out.strip():
             raise Reject("Deploy the trading lab before running a zone drill")
-    log(f"{region}: {'stopping its swarm workloads' if action == 'down' else 'starting its swarm workloads'}. The manager and host console remain connected.")
-    stream(["docker", "node", "update", "--availability", "drain" if action == "down" else "active", target[0]["id"]])
-    log("Request accepted; watch live task states as workloads stop or start")
+    log(f"{region}: {'crashing' if action == 'down' else 'restoring'} lab workloads. This does not power off the PC or its manager.")
+    code, result = http_json(f"{lab_base()}/api/site", {'site':REGION_SITE[region],'action':action}, timeout=30)
+    if code != 200 or result.get('error'):
+        raise Reject(result.get('error') or 'Workload failure request was not confirmed')
+    log('Request completed; watch measured recovery and application readiness')
+
 
 
 def job_release(region: str) -> None:
@@ -664,12 +668,12 @@ def view_lab() -> dict:
     return {"ok": True, "stale": stale, "error": "Service probes are delayed" if stale else "", "url": base, "ready": st.get("ready"), "boot": st.get("boot"), "zones": zones,
             "zones_down": sorted(SITE_REGION.get(s, s) for s in st.get("zones_down") or []), "path": path, "kafka": kafka,
             "api_rps": {k: round(v, 1) for k, v in api_rps.items()}, "audit": st.get("audit") or {},
-            "events": (st.get("events") or [])[:16], "pilot": lab_is_pilot()}
+            "failure_drills": st.get("failure_drills") or [], "events": (st.get("events") or [])[:16], "pilot": lab_is_pilot()}
 
 
 def lab_chaos(target: str, action: str) -> dict:
-    if action not in ("stop", "start"):
-        raise Reject("stop or start")
+    if action not in ("kill", "start"):
+        raise Reject("Choose Crash or Restore")
     code, j = http_json(f"{lab_base()}/api/chaos", {"target": target, "action": action}, timeout=20)
     if code != 200 or j.get("error"):
         raise Reject(j.get("error") or f"the lab's control service answered HTTP {code}")
@@ -857,6 +861,11 @@ class Handler(BaseHTTPRequestHandler):
     def route(self, method: str) -> None:
         path = self.path.split("?")[0]
         try:
+            if method == 'POST' and path == '/peer/crash-local':
+                token = self.headers.get('Authorization', '').removeprefix('Bearer ')
+                if not crash_authorized(token):
+                    return self.send(403, {'error':'Authenticated Swarm manager required'})
+                return self.send(200, crash_local(self.body()))
             if path.startswith("/peer/"):                     # other PCs, over NetBird
                 if not self.is_peer():
                     return self.send(403, {"error": "NetBird peers only"})
