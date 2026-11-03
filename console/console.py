@@ -514,22 +514,22 @@ def job_leave() -> None:
 
 
 def cleanup_departed() -> None:
-    """Only the elected leader removes down nodes; Docker enforces quorum on each mutation."""
+    """Remove down workers after Leave; keep disconnected managers for reconnection."""
     members = nodes()
     local = docker_info().get("swarm") or {}
     if not any(n["id"] == local.get("NodeID") and n["leader"] for n in members):
         return
     for n in members:
-        if n["state"] != "down" or n["id"] == local.get("NodeID"):
+        if n["state"] != "down" or n["id"] == local.get("NodeID") or n["manager"]:
             continue
+        # Leave demotes a manager before disconnecting. A down manager has not
+        # completed that protocol: it may only have lost its network connection.
+        # Evicting it here destroys its ability to reconnect with the same identity
+        # and can reduce the surviving manager set's fault tolerance.
         # Re-read before each operation: a disconnected PC may already have returned.
         fresh = next((x for x in nodes() if x["id"] == n["id"]), None)
-        if not fresh or fresh["state"] != "down":
+        if not fresh or fresh["state"] != "down" or fresh["manager"]:
             continue
-        if fresh["manager"]:
-            rc, out = sh(["docker", "node", "demote", n["id"]], 10)
-            if rc:
-                continue  # no quorum: keep the region occupied and retry later
         rc, out = sh(["docker", "node", "rm", n["id"]], 10)
         if rc == 0:
             print(f"Removed departed node {n['hostname']}; region {n['region']} is free", flush=True)

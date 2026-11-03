@@ -158,21 +158,33 @@ class Departures(unittest.TestCase):
             c.job_leave()
         stream.assert_called_once_with(['docker', 'swarm', 'leave', '--force'])
 
-    def test_leader_cleans_down_manager(self):
+    def test_disconnected_manager_keeps_its_membership(self):
         members = [node(leader=True), node('departed', 'down')]
         with patch.object(c, 'docker_info', return_value=info()), patch.object(c, 'nodes', return_value=members), patch.object(c, 'sh', return_value=(0, 'ok')) as sh:
             c.cleanup_departed()
-        self.assertEqual(sh.call_args_list[0].args[0], ['docker', 'node', 'demote', 'departed'])
-        self.assertEqual(sh.call_args_list[1].args[0], ['docker', 'node', 'rm', 'departed'])
+        sh.assert_not_called()
+
+    def test_completed_leave_cleans_down_worker_without_force(self):
+        members = [node(leader=True), node('departed', 'down', manager=False)]
+        with patch.object(c, 'docker_info', return_value=info()), patch.object(c, 'nodes', return_value=members), patch.object(c, 'sh', return_value=(0, 'ok')) as sh:
+            c.cleanup_departed()
+        sh.assert_called_once_with(['docker', 'node', 'rm', 'departed'], 10)
+
+    def test_worker_promoted_during_cleanup_is_retained(self):
+        before = [node(leader=True), node('other', 'down', manager=False)]
+        after = [node(leader=True), node('other', 'down', manager=True)]
+        with patch.object(c, 'docker_info', return_value=info()), patch.object(c, 'nodes', side_effect=[before, after]), patch.object(c, 'sh') as sh:
+            c.cleanup_departed()
+        sh.assert_not_called()
 
     def test_cleanup_without_quorum_keeps_region(self):
-        members = [node(leader=True), node('departed', 'down')]
+        members = [node(leader=True), node('departed', 'down', manager=False)]
         with patch.object(c, 'docker_info', return_value=info()), patch.object(c, 'nodes', return_value=members), patch.object(c, 'sh', return_value=(1, 'no quorum')) as sh:
             c.cleanup_departed()
         self.assertEqual(sh.call_count, 1)
 
     def test_returning_node_is_not_removed(self):
-        with patch.object(c, 'docker_info', return_value=info()), patch.object(c, 'nodes', side_effect=[[node(leader=True), node('other', 'down')], [node(leader=True), node('other')]]), patch.object(c, 'sh') as sh:
+        with patch.object(c, 'docker_info', return_value=info()), patch.object(c, 'nodes', side_effect=[[node(leader=True), node('other', 'down', manager=False)], [node(leader=True), node('other', manager=False)]]), patch.object(c, 'sh') as sh:
             c.cleanup_departed()
         sh.assert_not_called()
 

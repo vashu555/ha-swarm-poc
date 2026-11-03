@@ -51,6 +51,11 @@ the same moment: the first wins, the second is refused and steps back out.
 
 Run the same command again any time: it updates the project and reopens the console.
 
+A temporary network loss marks a manager offline but preserves its membership and region so it can reconnect.
+**Leave the swarm** demotes the manager before disconnecting; a remaining manager automatically removes that
+departed worker entry and frees its region. The console never automatically demotes a manager merely because
+it is down. Permanently replacing a lost manager is a separate membership-recovery operation.
+
 ## The main PC (Mumbai)
 
 The main PC is the one that **becomes Mumbai first**: with no swarm on the network yet, only Mumbai can be chosen,

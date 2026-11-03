@@ -313,7 +313,7 @@ function viewCombined() {
   const nodes = C.nodes.map(n => `<tr><td><span class="badge r" style="background:${(REG[n.region] || {}).c || "var(--muted)"}">${esc(n.region || "no region")}</span></td>
     <td>${esc(n.hostname)}${n.main ? " · <b>main</b>" : ""}</td><td>${esc(n.addr)}</td><td><span class="dot ${dotFor(n.state)}"></span>${esc(n.state)}</td>
     <td>${esc(n.availability)}</td><td>${n.leader ? "<b>★ Leader</b>" : esc(n.reachability)}</td>
-    <td>${n.state === "down" ? `<span class="muted">Automatic cleanup pending</span>` : ""}</td></tr>`).join("");
+    <td>${n.state === "down" ? `<span class="muted">${n.manager ? 'Waiting for manager to reconnect' : 'Leave cleanup pending'}</span>` : ""}</td></tr>`).join("");
   const byKind = {};
   for (const t of C.tasks) {
     const short = t.service.replace(/^(hal|infra|hello)_/, ""), kind = short.replace(/-\d+$/, "");
@@ -352,7 +352,7 @@ function viewCombined() {
       : `Crash zone workloads abruptly kills its lab tasks. Restore zone brings them back. The PC, its manager and console remain connected; this simulates workload loss, not a physical power cut.`}</p></div>
     <div class="grid g3">${zoneCards}</div>
     ${dataPathCard(null)}
-    <div class="card"><h2>PCs (swarm nodes)</h2><p class="muted">Departed PCs are removed and their regions freed automatically after Docker detects them as down. Cleanup requires a manager majority. Closing the browser does not leave the swarm.</p><table><tr><th>Region</th><th>Host</th><th>NetBird IP</th><th>State</th><th>Availability</th><th>Manager</th><th></th></tr>${nodes}</table></div>
+    <div class="card"><h2>PCs (swarm nodes)</h2><p class="muted">PCs that complete Leave are removed and their regions freed automatically. Disconnected managers stay registered so they can reconnect; their status shows the connection loss. Cleanup requires a manager majority. Closing the browser does not leave the swarm.</p><table><tr><th>Region</th><th>Host</th><th>NetBird IP</th><th>State</th><th>Availability</th><th>Manager</th><th></th></tr>${nodes}</table></div>
     <div class="card"><h2>Every service, by region</h2><p class="muted" style="margin-top:0">PostgreSQL: ${pg}</p>
       ${matrix ? `<table class="matrix"><tr><th>Kind</th>${S.regions.map(r => `<th style="color:${REG[r].c}">${REG[r].title}</th>`).join("")}</tr>${matrix}</table>` : `<p class="muted">Nothing deployed yet: build the images, then deploy the demo or the lab.</p>`}</div>
     <div class="card"><h2>Deploy (main PC)</h2><p class="muted" style="margin-top:0">In order: build images once → demo (optional) → lab. Before deploying the lab, stop the single-PC lab on this PC

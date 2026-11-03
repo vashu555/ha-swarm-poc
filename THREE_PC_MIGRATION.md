@@ -54,7 +54,7 @@ The actual cold-copy/import step is operator-controlled. The readiness tool and 
 - Online: Docker reports the node Ready and its manager link is not flagged unreachable.
 - Manager link lost: node/worker status and manager reachability disagree; workload state is shown separately.
 - Unreachable: the manager cannot currently establish the node's live status. It does not prove a power-off.
-- Not joined: no current member owns that region. Automatic departure cleanup may have removed an old entry.
+- Not joined: no current member owns that region. Automatic cleanup removes down workers after Leave; disconnected managers retain their membership and region so they can reconnect.
 - Running: Docker task state, not application correctness.
 - Probe OK: the specific service probe returned an acceptable result.
 - Responding: a stats/management endpoint answered; all dependencies are not thereby proven healthy.
