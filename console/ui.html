@@ -118,8 +118,9 @@ function topologyMap(map) {
       const canAct = !stale && map.control_available && !S.job.running && !['control','exchange'].includes(c.name) && ['running','stopped'].includes(c.state);
       return `<div class="map-component" title="${esc(c.error || '')}"><div class="map-component-head"><b>${esc(c.name)}</b>
         <button class="sec" ${canAct ? '' : 'disabled'} onclick="act('/api/lab/chaos',{target:'${c.name}',action:'${c.state === 'running' ? 'kill' : 'start'}'})">${c.state === 'running' ? 'Crash' : 'Restore'}</button></div>
-        ${chip(process,process)} ${chip(healthNames[health] || health,health)}
-        <small>${esc(c.host || 'No assigned host')}${!stale && c.role ? ' · ' + esc(c.role) : ''}${!stale && map.probe_fresh && c.state === 'running' ? ` · ${Number(c.in).toFixed(1)} in / ${Number(c.out).toFixed(1)} out` : ''}</small></div>`;
+        ${chip(process,process)} ${chip(c.name.startsWith('rabbit-') && health === 'healthy' ? 'Broker OK' : healthNames[health] || health,health)}
+        <small>${esc(c.host || 'No assigned host')}${!stale && c.role ? ' · ' + esc(c.role) : ''}${!stale && map.probe_fresh && c.state === 'running' ? ` · ${Number(c.in).toFixed(1)} in / ${Number(c.out).toFixed(1)} out` : ''}</small>
+        ${!stale && map.probe_fresh && c.probe_note ? `<small>${esc(c.probe_note)}</small>` : ''}</div>`;
     }).join('');
     return `<section class="topology-zone" style="--c:${REG[z.region].c}"><div class="hero"><h3>${REG[z.region].title}</h3>${chip('PC: '+(names[state] || state),state)}</div>
       <div class="host">${node ? `<b>${esc(node.host)}</b><br><span class="muted">${esc(node.address)}${node.leader ? ' · Leader' : node.manager ? ' · Manager' : ' · Worker'}</span>` : '<span class="muted">Waiting for this region’s PC</span>'}</div>

@@ -33,16 +33,24 @@ def engine_get(path, filters=None):
 def probe_health(name, status):
     if name.startswith('pg-'):
         member = next((m for m in (status.get('patroni') or {}).get('members', []) if m.get('name') == name), {})
-        return 'healthy' if member.get('state') in ('running', 'streaming') else 'unresponsive'
+        if not member.get('state'):
+            return 'unknown'
+        return 'healthy' if member['state'] in ('running', 'streaming') else 'degraded' if member['state'] in ('starting', 'creating replica') else 'unresponsive'
     if name.startswith('etcd-'):
-        return 'healthy' if (status.get('etcd', {}).get(name) or {}).get('up') else 'unresponsive'
+        value = (status.get('etcd') or {}).get(name) or {}
+        return 'unknown' if value.get('up') is None else 'healthy' if value['up'] else 'unresponsive'
     if name.startswith('kafka-'):
+        if status.get('kafka') is None:
+            return 'unknown'
         return 'healthy' if int(name.rsplit('-', 1)[1]) in (status.get('kafka') or {}).get('brokers', []) else 'unresponsive'
     if name.startswith('rabbit-'):
-        return 'healthy' if (status.get('rabbit') or {}).get('nodes', {}).get(name) else 'unresponsive'
+        value = (status.get('rabbit') or {}).get('nodes', {}).get(name)
+        return 'unknown' if value is None else 'healthy' if value else 'unresponsive'
     if name.startswith('redis-'):
         rd = status.get('redis') or {}
         node = rd.get('nodes', {}).get(name, {})
+        if node.get('up') is None:
+            return 'unknown'
         if not node.get('up'):
             return 'unresponsive'
         if node.get('role') == 'master':
@@ -51,20 +59,27 @@ def probe_health(name, status):
     if name.startswith('sentinel-'):
         rd = status.get('redis') or {}
         detail = rd.get('sentinel_details', {}).get(name, {})
+        if rd.get('sentinels', {}).get(name) is None:
+            return 'unknown'
         if not rd.get('sentinels', {}).get(name):
             return 'unresponsive'
         return 'healthy' if detail and not detail.get('tilt') and detail.get('quorum_ok') else 'degraded'
     if name.startswith('pgbouncer-'):
-        return 'healthy' if (status.get('bouncers') or {}).get(name, {}).get('up') else 'unresponsive'
+        value = (status.get('bouncers') or {}).get(name) or {}
+        return 'unknown' if value.get('up') is None else 'healthy' if value['up'] else 'unresponsive'
     if name.startswith('haproxy-'):
+        if (status.get('lbs') or {}).get(name) is None:
+            return 'unknown'
         return 'responding' if (status.get('lbs') or {}).get(name) else 'unresponsive'
     if name == 'control':
         return 'responding'
     if name == 'exchange':
         value = status.get('exchange') or {}
-        return 'unresponsive' if not value else 'degraded' if value.get('broken') or value.get('halted') else 'responding'
+        return 'unknown' if not value else 'degraded' if value.get('broken') or value.get('halted') else 'responding'
     service = (status.get('services') or {}).get(name)
-    if not service or service.get('error'):
+    if service is None:
+        return 'unknown'
+    if service.get('error'):
         return 'unresponsive'
     if any(service.get(key) is False for key in ('rabbit_ok', 'exchange_ok')):
         return 'degraded'
@@ -121,7 +136,11 @@ def build_topology(nodes, services, tasks, control, now=None):
             health = 'not_checked' if state != 'running' else 'stale' if not probe_fresh else probe_health(name, status)
         except (TypeError, ValueError, AttributeError):
             health = 'unknown'
+        queue_state = ((status.get('rabbit') or {}).get('queue_probe') or {}).get('state')
+        note = ({'not_created': 'Notifications queue not created yet', 'failed': 'Notifications queue probe unavailable'}.get(queue_state, '')
+                if name.startswith('rabbit-') and probe_fresh and state == 'running' else '')
         zones[region]['components'].append({'name': name, 'state': state, 'health': health,
+            'probe_note': note,
             'role': (status.get('roles') or {}).get(name, '') if probe_fresh and state == 'running' else '',
             'host': actual_node.get('Description', {}).get('Hostname', ''), 'error': task.get('Status', {}).get('Err', ''),
             'in': 0.0, 'out': 0.0})

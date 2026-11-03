@@ -16,6 +16,8 @@ python3 "$POC_DIR/scripts/patch-order-recovery.py" "$LAB_SRC/app" \
   --backup "$LAB_SRC/backups/order-recovery-$(date -u +%Y%m%dT%H%M%SZ)"
 python3 "$POC_DIR/scripts/patch-pgbouncer-probe.py" "$LAB_SRC/app" \
   --backup "$LAB_SRC/backups/pgbouncer-probe-$(date -u +%Y%m%dT%H%M%SZ)"
+python3 "$POC_DIR/scripts/patch-rabbit-probes.py" "$LAB_SRC/app" \
+  --backup "$LAB_SRC/backups/rabbit-probes-$(date -u +%Y%m%dT%H%M%SZ)"
 say "1/3  Registry (stack 'infra', runs on region=$FIRST_REGION)"
 FIRST_REGION="$FIRST_REGION" docker stack deploy --detach=true -c "$POC_DIR/stacks/registry.yml" infra
 for _ in $(seq 1 60); do curl -fs "http://$REGISTRY/v2/" >/dev/null 2>&1 && break; sleep 2; done

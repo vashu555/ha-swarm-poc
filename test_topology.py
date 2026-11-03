@@ -79,10 +79,47 @@ class TopologyTests(unittest.TestCase):
             self.assertEqual(result['zones'][0]['components'][0]['health'], 'stale')
             self.assertFalse(result['zones'][0]['components'][0]['role'])
 
-    def test_running_process_can_fail_its_probe(self):
+    def test_running_process_with_missing_probe_is_unknown(self):
         result = m.build_topology([node('mumbai')], [service()], [task()], {'status': {'observed_at': 100}}, now=101)
         self.assertEqual(result['zones'][0]['components'][0]['state'], 'running')
-        self.assertEqual(result['zones'][0]['components'][0]['health'], 'unresponsive')
+        self.assertEqual(result['zones'][0]['components'][0]['health'], 'unknown')
+
+    def test_missing_probe_results_are_unknown_for_each_component_kind(self):
+        status = {key: None for key in ('patroni','etcd','kafka','rabbit','redis','bouncers','lbs','exchange','services')}
+        for name in ('pg-1','etcd-1','kafka-1','rabbit-1','redis-1','sentinel-1','pgbouncer-1','haproxy-1','exchange','api-1'):
+            with self.subTest(name=name):
+                self.assertEqual(m.probe_health(name, status), 'unknown')
+
+    def test_explicit_failed_probes_remain_failed(self):
+        cases = {
+            'rabbit-1': {'rabbit': {'nodes': {'rabbit-1': False}}},
+            'etcd-1': {'etcd': {'etcd-1': {'up': False}}},
+            'pgbouncer-1': {'bouncers': {'pgbouncer-1': {'up': False}}},
+            'redis-1': {'redis': {'nodes': {'redis-1': {'up': False}}}},
+            'sentinel-1': {'redis': {'sentinels': {'sentinel-1': False}}},
+            'api-1': {'services': {'api-1': {'error': 'timeout'}}},
+        }
+        for name, status in cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(m.probe_health(name, status), 'unresponsive')
+
+    def test_missing_queue_does_not_make_healthy_rabbit_broker_fail(self):
+        self.assertEqual(m.probe_health('rabbit-1', {'rabbit': {'nodes': {'rabbit-1': True}, 'queue': None}}), 'healthy')
+
+    def test_queue_readiness_note_is_separate_and_not_reused_when_stale(self):
+        status = {'observed_at': 100, 'rabbit': {'nodes': {'rabbit-1': True}, 'queue': None, 'queue_probe': {'state': 'not_created'}}}
+        result = m.build_topology([node('mumbai')], [service('rabbit-1')], [task('rabbit-1')], {'status': status}, now=101)
+        component = result['zones'][0]['components'][0]
+        self.assertEqual(component['health'], 'healthy')
+        self.assertIn('queue not created', component['probe_note'])
+        stale = m.build_topology([node('mumbai')], [service('rabbit-1')], [task('rabbit-1')], {'status': status}, now=200)
+        self.assertEqual(stale['zones'][0]['components'][0]['probe_note'], '')
+
+    def test_inflight_pooler_probe_none_is_unknown(self):
+        self.assertEqual(m.probe_health('pgbouncer-1', {'bouncers': {'pgbouncer-1': None}}), 'unknown')
+
+    def test_database_clone_is_degraded_instead_of_failed(self):
+        self.assertEqual(m.probe_health('pg-2', {'patroni': {'members': [{'name': 'pg-2', 'state': 'creating replica'}]}}), 'degraded')
 
     def test_stats_response_does_not_imply_full_health(self):
         self.assertEqual(m.probe_health('api-1', {'services': {'api-1': {'counters': {}}}}), 'responding')
