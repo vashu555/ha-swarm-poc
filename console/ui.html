@@ -166,6 +166,13 @@ function recoveryCard() {
     <pre class="log">${esc(S.swarm.membership_error || '')}</pre></div>${peersCard()}${jobBox()}`;
 }
 
+function leavingCard() {
+  return `<div class="card"><h2>Leaving the swarm…</h2>
+    <div class="msg warn">Removing the manager role, then disconnecting this PC. Waiting for Docker to confirm completion.</div>
+    <p>Local data volumes are kept. Status refreshes automatically; do not start another join while Leave is running.</p>
+    </div>${peersCard()}${jobBox()}`;
+}
+
 // ------------------------------------------------------------------ step 1: NetBird
 function viewNetbird() {
   if (!S.netbird.installed) return `<div class="card"><h2>NetBird is not installed in Ubuntu</h2>
@@ -406,6 +413,19 @@ async function refreshView() {
   if (route !== location.hash) { refreshQueued = true; return; }
   const sw = S.swarm, joined = sw.state === 'active' && sw.region;
   $('#host').textContent = S.hostname + (S.netbird.ip ? ' · ' + S.netbird.ip : '');
+  // Demotion removes the manager socket before Docker's /info snapshot catches up.
+  // During an explicit Leave, show the job rather than diagnosing a quorum failure.
+  // Once the job ends, normal setup/recovery rendering exposes its actual outcome.
+  if (S.job.running && S.job.name === 'Leave the swarm') {
+    $('#rolebadge').textContent = 'Leaving';
+    renderContent($('#tabs'), '');
+    if ($('#flowmap').firstChild) $('#flowmap').replaceChildren();
+    const log = $('#joblog'), atEnd = !log || log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+    renderContent($('#app'), leavingCard());
+    const updatedLog = $('#joblog'); if (updatedLog && atEnd) updatedLog.scrollTop = updatedLog.scrollHeight;
+    document.title = 'Leaving the swarm · HA Swarm';
+    return;
+  }
   $('#rolebadge').innerHTML = joined ? `<span class="badge r" style="background:${REG[sw.region].c}">${REG[sw.region].title}${sw.is_main ? ' · main' : ''}</span>` : '';
   let [v, zr] = view().split('/');
   if (!joined) v = 'setup'; else if (v === 'auto' || v === 'setup') v = 'zone';
